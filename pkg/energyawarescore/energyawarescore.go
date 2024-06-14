@@ -47,7 +47,8 @@ func (eas *EnergyAwareScorer) Score(ctx context.Context, state *framework.CycleS
 	if !exists {
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("no energy data for node %s", nodeName))
 	}
-    klog.Infof("[EnergyAwareScorer] node '%s' energy: %s", nodeName, energy)
+    log.Println("[EnergyAwareScorer] node '%s' energy: %s", nodeName, energy)
+
 	// Invert the energy consumption to make lower energy consumption more favorable
 	score := int64(1000000 / energy)
 	return score, nil
