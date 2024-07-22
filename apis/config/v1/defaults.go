@@ -250,3 +250,13 @@ func SetDefaults_SySchedArgs(obj *SySchedArgs) {
 		obj.DefaultProfileName = &DefaultSySchedProfileName
 	}
 }
+
+
+// SetDefaultCarbonAwareArgs sets the default parameters for the NetworkTraffic plugin
+func SetDefaultCarbonAwareArgs(args *CarbonAwareArgs) {
+	if args.TimeRangeInMinutes == nil {
+		defaultTime := int64(1)
+		args.TimeRangeInMinutes = &defaultTime
+	}
+
+}

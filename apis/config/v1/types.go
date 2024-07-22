@@ -19,6 +19,8 @@ package v1
 import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	schedulerconfigv1 "k8s.io/kube-scheduler/config/v1"
 )
 
@@ -262,4 +264,24 @@ type SySchedArgs struct {
 
 	// CR name of the default profile for all system calls
 	DefaultProfileName *string `json:"defaultProfileName,omitempty"`
+}
+
+type CarbonAwareArgs struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// Address of the Prometheus Server
+	Address *string `json:"prometheusAddress,omitempty"`
+	// TimeRangeInMinutes used to aggregate the network metrics
+	TimeRangeInMinutes *int64 `json:"timeRangeInMinutes,omitempty"`
+}
+
+// DeepCopyObject implements runtime.Object.
+func (c *CarbonAwareArgs) DeepCopyObject() runtime.Object {
+	panic("unimplemented")
+}
+
+// GetObjectKind implements runtime.Object.
+// Subtle: this method shadows the method (TypeMeta).GetObjectKind of CarbonAwareArgs.TypeMeta.
+func (c *CarbonAwareArgs) GetObjectKind() schema.ObjectKind {
+	panic("unimplemented")
 }
