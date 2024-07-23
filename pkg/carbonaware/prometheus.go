@@ -43,20 +43,7 @@ func NewPrometheus(address string, timeRange time.Duration) *PrometheusHandle {
 	}
 }
 
-func (p *PrometheusHandle) GetNodeEnergyMeasure(node string) (*model.Sample, error) {
-	query := getNodeEnergyQuery(node, p.timeRange)
-	res, err := p.query(query)
-	if err != nil {
-		return nil, fmt.Errorf("[CarbonAware] Error querying prometheus: %w", err)
-	}
 
-	nodeMeasure := res.(model.Vector)
-	if len(nodeMeasure) != 1 {
-		return nil, fmt.Errorf("[CarbonAware] Invalid response, expected 1 value, got %d", len(nodeMeasure))
-	}
-
-	return nodeMeasure[0], nil
-}
 
 func getNodeEnergyQuery(node,query_str string, timeRange time.Duration) string {
 	return fmt.Sprintf(query_str, node, timeRange)
@@ -70,5 +57,49 @@ func (p *PrometheusHandle) query(query string) (model.Value, error) {
 	}
 
 	return results, err
+}
+
+
+func (p *PrometheusHandle) GetNodeEnergyMeasure(node,qr string) (*model.Sample, error) {
+	query := getNodeEnergyQuery(qr,node, p.timeRange)
+	res, err := p.query(query)
+	if err != nil {
+		return nil, fmt.Errorf("[CarbonAware] Error querying prometheus: %w", err)
+	}
+	nodeMeasure := res.(model.Vector)
+	if len(nodeMeasure) != 1 {
+		return nil, fmt.Errorf("[CarbonAware] Invalid response, expected 1 value, got %d", len(nodeMeasure))
+	}
+	return nodeMeasure[0], nil
+}
+
+func (p *PrometheusHandle) GetTotalConsumptionNodeEnergy(node string) (float64, error) {
+	coreQuery := getNodeEnergyQuery(node, nodeCoreEnergyQueryTemplate, p.timeRange)
+	dramQuery := getNodeEnergyQuery(node, nodeDramEnergyQueryTemplate, p.timeRange)
+	uncoreQuery := getNodeEnergyQuery(node, nodeUnCoreEnergyQueryTemplate, p.timeRange)
+	otherQuery := getNodeEnergyQuery(node, nodeOtherEnergyQueryTemplate, p.timeRange)
+
+	coreEnergy, err := p.GetNodeEnergyMeasure(node, coreQuery)
+	if err != nil {
+		return 0, fmt.Errorf("[CarbonAware] Error getting core energy: %w", err)
+	}
+
+	dramEnergy, err := p.GetNodeEnergyMeasure(node, dramQuery)
+	if err != nil {
+		return 0, fmt.Errorf("[CarbonAware] Error getting dram energy: %w", err)
+	}
+
+	uncoreEnergy, err := p.GetNodeEnergyMeasure(node, uncoreQuery)
+	if err != nil {
+		return 0, fmt.Errorf("[CarbonAware] Error getting uncore energy: %w", err)
+	}
+
+	otherEnergy, err := p.GetNodeEnergyMeasure(node, otherQuery)
+	if err != nil {
+		return 0, fmt.Errorf("[CarbonAware] Error getting other energy: %w", err)
+	}
+
+	totalEnergy := coreEnergy.Value + dramEnergy.Value + uncoreEnergy.Value + otherEnergy.Value
+	return float64(totalEnergy), nil
 }
 

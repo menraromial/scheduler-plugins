@@ -15,11 +15,14 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/scheduler-plugins/apis/config"
 	"time"
+	"go.etcd.io/etcd/clientv3"
 )
 
 const (
 	Name          = "CarbonAware"
 	prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
+	preFilterStateKey = "PreFilter" + Name
+	preScoreStateKey  = "PreScore" + Name
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
@@ -43,8 +46,40 @@ type EnergyMetrics struct {
 
 type CarbonAware struct {
 	handle        framework.Handle
-	energyMetrics map[string]float64
 	prometheus    *PrometheusHandle
+	etcdClient *clientv3.Client
+}
+
+
+type NodeResources struct {
+    CPU    int64
+    Memory int64
+	APowerLimit int64
+	CPowerLimit int64
+}
+
+// preFilterState computed at PreFilter and used at Filter.
+type preFilterState struct {
+	res framework.Resource
+	nodeResources map[string]NodeResources
+}
+
+// Clone the prefilter state.
+func (s *preFilterState) Clone() framework.StateData {
+	return s
+}
+
+// preScoreState computed at PreScore and used at Score.
+type preScoreState struct {
+	// podRequests have the same order as the resources defined in NodeResourcesBalancedAllocationArgs.Resources,
+	// same for other place we store a list like that.
+	podRequests []int64
+}
+
+// Clone implements the mandatory Clone interface. We don't really copy the data since
+// there is no need for that.
+func (s *preScoreState) Clone() framework.StateData {
+	return s
 }
 
 
@@ -62,62 +97,110 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 		return nil, fmt.Errorf("[CarbonAware] want args to be of type CarbonAwareArgs, got %T", obj)
 	}
 
+	// Configuration de l'initialisation du client etcd
+    cli, err := clientv3.New(clientv3.Config{
+        Endpoints:   []string{"http://etcd.default.svc.cluster.local:2379"},
+        DialTimeout: 5 * time.Second,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to create etcd client: %v", err)
+    }
+
 	klog.Infof("[CarbonAware] args received.TimeRangeInMinutes: %d, Address: %s", args.TimeRangeInMinutes, args.Address)
 
 	return &CarbonAware{
 		handle:        handle,
-		energyMetrics: fetchEnergyMetrics(),
 		prometheus:    NewPrometheus(args.Address, time.Minute*time.Duration(args.TimeRangeInMinutes)),
 	}, nil
 
 }
 
-func fetchEnergyMetrics() map[string]float64 {
-	resp, err := http.Get(prometheusURL)
-	if err != nil {
-		log.Fatalf("Failed to fetch energy metrics: %v", err)
-	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatalf("Failed to read response body: %v", err)
-	}
 
-	var metrics EnergyMetrics
-	if err := json.Unmarshal(body, &metrics); err != nil {
-		log.Fatalf("Failed to unmarshal JSON: %v", err)
-	}
 
-	energyMetrics := make(map[string]float64)
-	for _, result := range metrics.Data.Result {
-		instance := result.Metric.Instance
-		value, _ := result.Value[1].(string)
-		//energy, _ := strconv.ParseFloat(value, 64)
-		energy, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			log.Printf("Failed to parse energy value for instance %s: %v", instance, err)
+func computePodResourceRequest(pod *v1.Pod) *preFilterState {
+	// pod hasn't scheduled yet so we don't need to worry about InPlacePodVerticalScalingEnabled
+	reqs := resource.PodRequests(pod, resource.PodResourcesOptions{})
+	result := &preFilterState{}
+	result.res.SetMaxResource(reqs)
+	return result
+}
+
+// PreFilter invoked at the prefilter extension point.
+func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+	
+	//nodeLimits := make(map[string]int)
+	result := computePodResourceRequest(pod)
+	nodeRes := make(map[string]NodeResources)
+
+    for _, node := range kcas.handle.SnapshotSharedLister().NodeInfos().List() {
+        nodeName := node.Node().Name
+        key := fmt.Sprintf("/pLimits/actual/0/%s", nodeName)
+        keyC := fmt.Sprintf("/pLimits/0/%s", nodeName)
+
+        resp, err := kcas.etcdClient.Get(ctx, key)
+		respC, errC := kcas.etcdClient.Get(ctx, keyC)
+        if err != nil or errC != nil {
+            klog.ErrorS(err, "Failed to get power limit from etcd", "nodeName", nodeName)
+			continue
+        }
+
+        if len(resp.Kvs) == 0 or len(respC.Kvs) == 0 {
+            klog.ErrorS(fmt.Errorf("no value found for key"), "Failed to get power limit from etcd", "nodeName", nodeName, "key", key)
+            continue
+        }
+
+        var powerLimit int
+		var powerLimitC int
+        if err := json.Unmarshal(resp.Kvs[0].Value, &powerLimit); err != nil {
+            klog.ErrorS(err, "Failed to unmarshal etcd response", "nodeName", nodeName)
+            continue
+        }
+		if errC := json.Unmarshal(respC.Kvs[0].Value, &powerLimitC); errC != nil {
+			klog.ErrorS(errC, "Failed to unmarshal etcd response", "nodeName", nodeName)
 			continue
 		}
-		energyMetrics[instance] = energy
+		// Get CPU and Memory information from the node
+        capacity := node.Node().Status.Capacity
+        cpu := capacity.Cpu().MilliValue()
+        memory := capacity.Memory().Value() // Convert memory from
+
+        //nodeLimits[nodeName] = powerLimit
+		nodeRes[nodeName] = NodeResources{
+			CPU: cpu,
+			Memory: memory,
+			APowerLimit: powerLimit,
+			CPowerLimit: powerLimitC,
+		}
+    }
+
+	result.nodeResources = nodeRes
+	
+	cycleState.Write(preFilterStateKey, result)
+	return nil, nil
+}
+
+// PreFilterExtensions returns prefilter extensions, pod add and remove.
+func (kcas *CarbonAware) PreFilterExtensions() framework.PreFilterExtensions {
+	return nil
+}
+
+func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error) {
+	c, err := cycleState.Read(preFilterStateKey)
+	if err != nil {
+		// preFilterState doesn't exist, likely PreFilter wasn't invoked.
+		return nil, fmt.Errorf("error reading %q from cycleState: %w", preFilterStateKey, err)
 	}
-	return energyMetrics
+
+	s, ok := c.(*preFilterState)
+	if !ok {
+		return nil, fmt.Errorf("%+v  convert to NodeResourcesFit.preFilterState error", c)
+	}
+	return s, nil
 }
 
-/*
-func main() {
-	registry := registry.NewRegistry()
-	registry.Register(pluginName, New)
-
-	fmt.Printf("%s plugin registered.\n", pluginName)
-}
-*/
 
 
-// PreFilter implements framework.PreFilterPlugin.
-func (eas *CarbonAware) PreFilter(ctx context.Context, state *framework.CycleState, p *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
-	panic("unimplemented")
-}
 
 // Filter implements framework.FilterPlugin.
 func (eas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
