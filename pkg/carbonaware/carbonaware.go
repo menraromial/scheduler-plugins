@@ -20,6 +20,8 @@ const (
 	prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
+
+	ErrReason = "node(s) didn't have power for the requested pod ports"
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
@@ -68,9 +70,8 @@ func (s *preFilterState) Clone() framework.StateData {
 
 // preScoreState computed at PreScore and used at Score.
 type preScoreState struct {
-	// podRequests have the same order as the resources defined in NodeResourcesBalancedAllocationArgs.Resources,
-	// same for other place we store a list like that.
-	podRequests []int64
+	podInfo framework.Resource
+	nodeResources map[string]NodeResources
 }
 
 // Clone implements the mandatory Clone interface. We don't really copy the data since
@@ -124,11 +125,11 @@ func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 	return result
 }
 
-// PreFilter invoked at the prefilter extension point.
-func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+// Compute All resources
+func (kcas *CarbonAware) computeResources(ctx context.Context, pod *v1.Pod) (map[string]NodeResources, *framework.Status) {
 	
 	//nodeLimits := make(map[string]int)
-	result := computePodResourceRequest(pod)
+	//result := computePodResourceRequest(pod)
 	nodeRes := make(map[string]NodeResources)
 
 	nodeInfos, err := kcas.handle.SnapshotSharedLister().NodeInfos().List()
@@ -179,6 +180,20 @@ func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.Cy
 		}
     }
 
+	//result.nodeResources = nodeRes
+	
+	return nodeRes, nil
+}
+
+// PreFilter invoked at the prefilter extension point.
+func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+	
+	//nodeLimits := make(map[string]int)
+	result := computePodResourceRequest(pod)
+	nodeRes, err := kcas.computeResources(ctx, pod)
+	if err != nil {
+		return nil, err
+	}
 	result.nodeResources = nodeRes
 	
 	cycleState.Write(preFilterStateKey, result)
@@ -208,12 +223,51 @@ func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error
 
 
 // Filter implements framework.FilterPlugin.
-func (eas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
-	panic("unimplemented")
+func (kcas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	// Get the prefilter state.
+	wantPower, err := getPreFilterState(state)
+	if err != nil {
+		return framework.AsStatus(err)
+	}
+	fits := kcas.fitsPower(wantPower, nodeInfo)
+	if !fits {
+		return framework.NewStatus(framework.Unschedulable, ErrReason)
+	}
+	return nil
+}
+
+func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framework.NodeInfo ) bool {
+	nodeName := nodeInfo.Node().Name
+	
+	//nodeRes,err = wantPower.nodeResources[nodeName]
+	prometheus := kcas.prometheus
+	nodeActualConsumption, err := prometheus.GetTotalConsumptionNodeEnergy(nodeName)
+	if err != nil {
+		klog.Errorf("[CarbonAware] Error getting node energy: %v", err)
+		return false
+	}
+
+	nodeRes, ok := wantPower.nodeResources[nodeName]
+	if !ok {
+		return false
+	}
+	podInfo := wantPower.res
+	// Get the CPU and Memory information requested by the pod
+	podCPU := podInfo.MilliCPU
+	podMemory := podInfo.Memory
+	// calculate the power needed by the pod
+	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower = podPower/1e6 // convert to what
+	// check if the node has enough power for the pod
+	pr_i := float64(nodeRes.CPowerLimit) - nodeActualConsumption
+	if pr_i < float64(podPower) {
+		return false
+	}
+	return true
 }
 
 // PreScore implements framework.PreScorePlugin.
-func (eas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
 	panic("unimplemented")
 }
 
