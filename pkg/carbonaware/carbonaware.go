@@ -4,16 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/scheduler-plugins/apis/config"
+	"k8s.io/kubernetes/pkg/api/v1/resource"
 	"time"
 	"go.etcd.io/etcd/clientv3"
 )
@@ -111,6 +108,7 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 	return &CarbonAware{
 		handle:        handle,
 		prometheus:    NewPrometheus(args.Address, time.Minute*time.Duration(args.TimeRangeInMinutes)),
+		etcdClient: cli,
 	}, nil
 
 }
@@ -133,25 +131,32 @@ func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.Cy
 	result := computePodResourceRequest(pod)
 	nodeRes := make(map[string]NodeResources)
 
-    for _, node := range kcas.handle.SnapshotSharedLister().NodeInfos().List() {
+	nodeInfos, err := kcas.handle.SnapshotSharedLister().NodeInfos().List()
+	if err != nil {
+		klog.Errorf("Error getting node infos: %v", err)
+		// Handle the error appropriately, e.g., return an error or continue with the loop.
+		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Error getting node infos: %v", err))
+	}
+	
+	for _, node := range nodeInfos {
         nodeName := node.Node().Name
         key := fmt.Sprintf("/pLimits/actual/0/%s", nodeName)
         keyC := fmt.Sprintf("/pLimits/0/%s", nodeName)
 
         resp, err := kcas.etcdClient.Get(ctx, key)
 		respC, errC := kcas.etcdClient.Get(ctx, keyC)
-        if err != nil or errC != nil {
+		if err != nil || errC != nil {
             klog.ErrorS(err, "Failed to get power limit from etcd", "nodeName", nodeName)
 			continue
         }
 
-        if len(resp.Kvs) == 0 or len(respC.Kvs) == 0 {
+        if len(resp.Kvs) == 0 || len(respC.Kvs) == 0 {
             klog.ErrorS(fmt.Errorf("no value found for key"), "Failed to get power limit from etcd", "nodeName", nodeName, "key", key)
             continue
         }
 
-        var powerLimit int
-		var powerLimitC int
+        var powerLimit int64
+		var powerLimitC int64
         if err := json.Unmarshal(resp.Kvs[0].Value, &powerLimit); err != nil {
             klog.ErrorS(err, "Failed to unmarshal etcd response", "nodeName", nodeName)
             continue
@@ -218,10 +223,6 @@ func (eas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, 
 }
 
 
-// PreFilterExtensions implements framework.PreFilterPlugin.
-func (eas *CarbonAware) PreFilterExtensions() framework.PreFilterExtensions {
-	panic("unimplemented")
-}
 
 
 
