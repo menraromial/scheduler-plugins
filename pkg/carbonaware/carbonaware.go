@@ -21,6 +21,8 @@ const (
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
 
+	
+
 	ErrReason = "node(s) didn't have power for the requested pod ports"
 )
 
@@ -257,10 +259,10 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podMemory := podInfo.Memory
 	// calculate the power needed by the pod
 	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
-	podPower = podPower/1e6 // convert to what
+	podPower = podPower // convert to what
 	// check if the node has enough power for the pod
-	pr_i := float64(nodeRes.CPowerLimit) - nodeActualConsumption
-	if pr_i < float64(podPower) {
+	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
+	if pr_i < podPower {
 		return false
 	}
 	return true
@@ -268,12 +270,79 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 
 // PreScore implements framework.PreScorePlugin.
 func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
-	panic("unimplemented")
+	// Get the prefilter state.
+	preFilterState, err := getPreFilterState(state)
+	if err != nil {
+		return framework.AsStatus(err)
+	}
+
+	// Compute pod resource request.
+	podInfo := computePodResourceRequest(pod).res
+
+	// Filter out nodes that didn't pass the Filter phase.
+	filteredNodeResources := make(map[string]NodeResources)
+	for _, node := range nodes {
+		nodeName := node.Name
+		if nodeRes, ok := preFilterState.nodeResources[nodeName]; ok {
+			filteredNodeResources[nodeName] = nodeRes
+		}
+	}
+
+	// Store the preScore state.
+	preScoreState := &preScoreState{
+		podInfo:       podInfo,
+		nodeResources: filteredNodeResources,
+	}
+
+	state.Write(preScoreStateKey, preScoreState)
+	return nil
+}
+
+// getPreScoreState retrieves the preScore state from the cycle state.
+func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) {
+	c, err := cycleState.Read(preScoreStateKey)
+	if err != nil {
+		return nil, fmt.Errorf("error reading %q from cycleState: %w", preScoreStateKey, err)
+	}
+
+	s, ok := c.(*preScoreState)
+	if !ok {
+		return nil, fmt.Errorf("%+v  convert to preScoreState error", c)
+	}
+	return s, nil
 }
 
 // Score implements framework.ScorePlugin.
-func (eas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
-	panic("unimplemented")
+func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
+	// Implement the scoring logic based on power consumption.
+	prometheus := kcas.prometheus
+	nodeActualConsumption, err := prometheus.GetTotalConsumptionNodeEnergy(nodeName)
+	if err != nil {
+		klog.Errorf("[CarbonAware] Error getting node energy: %v", err)
+		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("Error getting node energy: %v", err))
+
+	}
+
+	preScoreState, err := getPreScoreState(state)
+	if err != nil {
+		return 0, framework.AsStatus(err)
+	}
+
+	nodeRes, ok := preScoreState.nodeResources[nodeName]
+	if !ok {
+		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %s not found in preScoreState", nodeName))
+	}
+
+	podCPU := preScoreState.podInfo.MilliCPU
+	podMemory := preScoreState.podInfo.Memory
+
+	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower = podPower // convert to appropriate unit
+	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
+
+	score := pr_i - podPower
+
+	return score, nil
 }
 
 
@@ -283,6 +352,42 @@ func (eas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, 
 func (eas *CarbonAware) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
+
+
+// NormalizeScore normalizes the scores of nodes based on their power availability.
+func (kcas *CarbonAware) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
+    if len(scores) == 0 {
+        return framework.NewStatus(framework.Error, "no scores to normalize")
+    }
+
+    // Find the min and max scores
+    minScore, maxScore := scores[0].Score, scores[0].Score
+    for _, nodeScore := range scores {
+        if nodeScore.Score < minScore {
+            minScore = nodeScore.Score
+        }
+        if nodeScore.Score > maxScore {
+            maxScore = nodeScore.Score
+        }
+    }
+
+    // Normalize the scores
+    scoreRange := maxScore - minScore
+    if scoreRange == 0 {
+        // All scores are the same, set all to the highest possible value
+        for i := range scores {
+            scores[i].Score = framework.MaxNodeScore
+        }
+    } else {
+        for i := range scores {
+            normalizedScore := float64(scores[i].Score-minScore) / float64(scoreRange) 
+            scores[i].Score = int64(normalizedScore)
+        }
+    }
+
+    return nil
+}
+
 
 
 

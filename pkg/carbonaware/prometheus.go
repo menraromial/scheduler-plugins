@@ -14,12 +14,16 @@ import (
 const (
 	// nodeMeasureQueryTemplate is the template string to get the query for the node used bandwidth
 	nodeMeasureQueryTemplate = "sum_over_time(node_network_receive_bytes_total{kubernetes_node=\"%s\",device=\"%s\"}[%s])"
-	nodeTotalConsumptionQuery = "sum_over_time(kepler_container_joules_total{kubernetes_node=\"%s\"}[%s])"
-    nodeCoreEnergyQueryTemplate = "kepler_node_core_joules_total{kubernetes_node=\"%s\"}[%s]"
-	nodeDramEnergyQueryTemplate = "keple_node_dram_joules_total{kubernetes_node=\"%s\"}[%s]"
-	nodeUnCoreEnergyQueryTemplate = "kepler_node_uncore_joules_total{kubernetes_node=\"%s\"}[%s]"
-	nodeOtherEnergyQueryTemplate = "kepler_node_other_joules_total{kubernetes_node=\"%s\"}[%s]"
+	nodeTotalConsumptionQuery = "sum_over_time(kepler_container_joules_total{instance=\"%s\"}[%s])"
+    nodeCoreEnergyQueryTemplate  = "kepler_node_core_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	nodeDramEnergyQueryTemplate  = "kepler_node_dram_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	nodeUnCoreEnergyQueryTemplate = "kepler_node_uncore_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	nodeOtherEnergyQueryTemplate  = "kepler_node_other_joules_total{instance=\"%s\",mode=\"dynamic\"}[%s]"
+
+	WH_TO_MICROWATT = 1000000
+	timeElapsed = 30.0
 )
+
 
 // Handles the interaction of the networkplugin with Prometheus
 type PrometheusHandle struct {
@@ -60,20 +64,20 @@ func (p *PrometheusHandle) query(query string) (model.Value, error) {
 }
 
 
-func (p *PrometheusHandle) GetNodeEnergyMeasure(node,qr string) (*model.Sample, error) {
+func (p *PrometheusHandle) GetNodeEnergyMeasure(node,qr string) (model.Matrix, error) {
 	query := getNodeEnergyQuery(qr,node, p.timeRange)
 	res, err := p.query(query)
 	if err != nil {
 		return nil, fmt.Errorf("[CarbonAware] Error querying prometheus: %w", err)
 	}
-	nodeMeasure := res.(model.Vector)
-	if len(nodeMeasure) != 1 {
-		return nil, fmt.Errorf("[CarbonAware] Invalid response, expected 1 value, got %d", len(nodeMeasure))
+	nodeMeasure := res.(model.Matrix)
+	if len(nodeMeasure[0].Values) != 2 {
+		return nil, fmt.Errorf("[CarbonAware] Invalid response, expected 2 value, got %d", len(nodeMeasure))
 	}
-	return nodeMeasure[0], nil
+	return nodeMeasure, nil
 }
 
-func (p *PrometheusHandle) GetTotalConsumptionNodeEnergy(node string) (float64, error) {
+func (p *PrometheusHandle) GetTotalConsumptionNodeEnergy(node string) (int64, error) {
 	coreQuery := getNodeEnergyQuery(node, nodeCoreEnergyQueryTemplate, p.timeRange)
 	dramQuery := getNodeEnergyQuery(node, nodeDramEnergyQueryTemplate, p.timeRange)
 	uncoreQuery := getNodeEnergyQuery(node, nodeUnCoreEnergyQueryTemplate, p.timeRange)
@@ -99,7 +103,13 @@ func (p *PrometheusHandle) GetTotalConsumptionNodeEnergy(node string) (float64, 
 		return 0, fmt.Errorf("[CarbonAware] Error getting other energy: %w", err)
 	}
 
-	totalEnergy := coreEnergy.Value + dramEnergy.Value + uncoreEnergy.Value + otherEnergy.Value
-	return float64(totalEnergy), nil
+	coreEnergyValue := float32(coreEnergy[0].Values[1].Value) - float32(coreEnergy[0].Values[0].Value)
+	dramEnergyValue := float32(dramEnergy[0].Values[1].Value) - float32(dramEnergy[0].Values[0].Value)
+	uncoreEnergyValue := float32(uncoreEnergy[0].Values[1].Value) - float32(uncoreEnergy[0].Values[0].Value)
+	otherEnergyValue := float32(otherEnergy[0].Values[1].Value) - float32(otherEnergy[0].Values[0].Value)
+
+
+	totalEnergy := (coreEnergyValue + dramEnergyValue + uncoreEnergyValue + otherEnergyValue)/timeElapsed*WH_TO_MICROWATT
+	return int64(totalEnergy), nil
 }
 
