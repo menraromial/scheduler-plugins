@@ -258,5 +258,9 @@ func SetDefaultCarbonAwareArgs(args *CarbonAwareArgs) {
 		defaultTime := int64(1)
 		args.TimeRangeInMinutes = &defaultTime
 	}
+	if args.Address == nil {
+		defaultAddress := "http://localhost:9090"
+		args.Address = &defaultAddress
+	}
 
 }
