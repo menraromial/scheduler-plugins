@@ -2,28 +2,29 @@ package carbonaware
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/api/v1/resource"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/scheduler-plugins/apis/config"
-	"k8s.io/kubernetes/pkg/api/v1/resource"
-	"time"
-	"go.etcd.io/etcd/clientv3"
 )
 
 const (
 	Name          = "CarbonAware"
-	prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
+	//prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
 
 	
 
 	ErrReason = "node(s) didn't have power for the requested pod ports"
+	constraints0PowerLimitStr = "rapl/constraint-0-power-limit-uw"
+	constraints0PowerLimitCStr = "crapl/constraint-1-power-limit-uw"
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
@@ -32,7 +33,7 @@ var _ framework.PreScorePlugin = &CarbonAware{}
 var _ framework.ScorePlugin = &CarbonAware{}
 //var _ framework.NodeScoreExtension = &CarbonAware{}
 
-// EnergyMetrics holds the energy metrics for nodes
+/* EnergyMetrics holds the energy metrics for nodes
 type EnergyMetrics struct {
 	Status string `json:"status"`
 	Data   struct {
@@ -44,11 +45,11 @@ type EnergyMetrics struct {
 		} `json:"result"`
 	} `json:"data"`
 }
+	*/
 
 type CarbonAware struct {
 	handle        framework.Handle
 	prometheus    *PrometheusHandle
-	etcdClient *clientv3.Client
 }
 
 
@@ -97,25 +98,24 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 		return nil, fmt.Errorf("[CarbonAware] want args to be of type CarbonAwareArgs, got %T", obj)
 	}
 
-	// Configuration de l'initialisation du client etcd
-    cli, err := clientv3.New(clientv3.Config{
-        Endpoints:   []string{"http://etcd.default.svc.cluster.local:2379"},
-        DialTimeout: 5 * time.Second,
-    })
-    if err != nil {
-        return nil, fmt.Errorf("failed to create etcd client: %v", err)
-    }
 
 	klog.Infof("[CarbonAware] args received.TimeRangeInMinutes: %d, Address: %s", args.TimeRangeInMinutes, args.Address)
 
 	return &CarbonAware{
 		handle:        handle,
 		prometheus:    NewPrometheus(args.Address, time.Minute*time.Duration(args.TimeRangeInMinutes)),
-		etcdClient: cli,
 	}, nil
 
 }
 
+
+func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (string, error) {
+	node, err := kcas.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get node %s: %v", nodeName, err)
+	}
+	return node.Node().Labels[labelKey], nil
+}
 
 
 
@@ -128,11 +128,12 @@ func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 }
 
 // Compute All resources
-func (kcas *CarbonAware) computeResources(ctx context.Context, pod *v1.Pod) (map[string]NodeResources, *framework.Status) {
+func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framework.Status) {
 	
 	//nodeLimits := make(map[string]int)
 	//result := computePodResourceRequest(pod)
 	nodeRes := make(map[string]NodeResources)
+	
 
 	nodeInfos, err := kcas.handle.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
@@ -143,29 +144,29 @@ func (kcas *CarbonAware) computeResources(ctx context.Context, pod *v1.Pod) (map
 	
 	for _, node := range nodeInfos {
         nodeName := node.Node().Name
-        key := fmt.Sprintf("/pLimits/actual/0/%s", nodeName)
-        keyC := fmt.Sprintf("/pLimits/0/%s", nodeName)
 
-        resp, err := kcas.etcdClient.Get(ctx, key)
-		respC, errC := kcas.etcdClient.Get(ctx, keyC)
-		if err != nil || errC != nil {
-            klog.ErrorS(err, "Failed to get power limit from etcd", "nodeName", nodeName)
+		constraints0PowerLimit, err := kcas.getNodeLabelValue(nodeName, constraints0PowerLimitStr)
+		if err != nil {
+			klog.ErrorS(err, "Failed to get power limit from node", "nodeName", nodeName)
 			continue
-        }
+		}
 
-        if len(resp.Kvs) == 0 || len(respC.Kvs) == 0 {
-            klog.ErrorS(fmt.Errorf("no value found for key"), "Failed to get power limit from etcd", "nodeName", nodeName, "key", key)
-            continue
-        }
+		constraints0PowerLimitC, errC := kcas.getNodeLabelValue(nodeName, constraints0PowerLimitCStr)
+		if errC != nil {
+			klog.ErrorS(errC, "Failed to get power limit from node", "nodeName", nodeName)
+			continue
+		}
 
-        var powerLimit int64
-		var powerLimitC int64
-        if err := json.Unmarshal(resp.Kvs[0].Value, &powerLimit); err != nil {
-            klog.ErrorS(err, "Failed to unmarshal etcd response", "nodeName", nodeName)
-            continue
-        }
-		if errC := json.Unmarshal(respC.Kvs[0].Value, &powerLimitC); errC != nil {
-			klog.ErrorS(errC, "Failed to unmarshal etcd response", "nodeName", nodeName)
+        
+		powerLimit, err := strconv.ParseInt(constraints0PowerLimit, 10, 64)
+		if err != nil {
+			klog.ErrorS(err, "Failed to parse power limit", "powerLimit", constraints0PowerLimit)
+			continue
+		}
+
+		powerLimitC, errC := strconv.ParseInt(constraints0PowerLimitC, 10, 64)
+		if errC != nil {
+			klog.ErrorS(errC, "Failed to parse power limit", "powerLimit", constraints0PowerLimitC)
 			continue
 		}
 		// Get CPU and Memory information from the node
@@ -192,7 +193,7 @@ func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.Cy
 	
 	//nodeLimits := make(map[string]int)
 	result := computePodResourceRequest(pod)
-	nodeRes, err := kcas.computeResources(ctx, pod)
+	nodeRes, err := kcas.computeResources()
 	if err != nil {
 		return nil, err
 	}
@@ -259,13 +260,9 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podMemory := podInfo.Memory
 	// calculate the power needed by the pod
 	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
-	podPower = podPower // convert to what
 	// check if the node has enough power for the pod
 	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
-	if pr_i < podPower {
-		return false
-	}
-	return true
+	return pr_i >= podPower
 }
 
 // PreScore implements framework.PreScorePlugin.
@@ -337,7 +334,7 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 	podMemory := preScoreState.podInfo.Memory
 
 	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
-	podPower = podPower // convert to appropriate unit
+	//podPower = podPower // convert to appropriate unit
 	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
 
 	score := pr_i - podPower
