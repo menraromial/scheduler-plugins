@@ -16,19 +16,19 @@ COPY . .
 
 # Build the Go app
 WORKDIR /app/cmd/scheduler
-RUN go build -o /main .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /main .
 
 # Start a new stage from scratch
-FROM alpine:latest  
+FROM alpine:latest 
+
+# Install necessary packages
+RUN apk --no-cache add ca-certificates sudo
 
 # Set the Current Working Directory inside the container
 WORKDIR /root/
 
 # Copy the Pre-built binary file from the previous stage
 COPY --from=builder /main .
-
-# Expose port 8080 to the outside world
-EXPOSE 8080
 
 # Command to run the executable
 CMD ["./main"]
