@@ -50,7 +50,7 @@ func TestDiscardReservedNodesGetCachedNRTCopy(t *testing.T) {
 
 	checkGetCachedNRTCopy(
 		t,
-		func(client ctrlclient.Client, _ podlisterv1.PodLister) (Interface, error) {
+		func(client ctrlclient.WithWatch, _ podlisterv1.PodLister) (Interface, error) {
 			return NewDiscardReserved(klog.Background(), client), nil
 		},
 		testCases...,
@@ -66,8 +66,8 @@ func TestDiscardReservedNodesGetNRTCopyFails(t *testing.T) {
 		},
 	}
 
-	nrtObj, ok := nrtCache.GetCachedNRTCopy(context.Background(), "node1", &corev1.Pod{})
-	if ok {
+	nrtObj, nrtInfo := nrtCache.GetCachedNRTCopy(context.Background(), "node1", &corev1.Pod{})
+	if nrtInfo.Fresh {
 		t.Fatal("expected false\ngot true\n")
 	}
 	if nrtObj != nil {

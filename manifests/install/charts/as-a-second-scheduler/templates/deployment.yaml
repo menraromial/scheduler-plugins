@@ -15,19 +15,25 @@ spec:
       labels:
         app: scheduler-plugins-controller
     spec:
+      {{- with .Values.controller.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       serviceAccountName: {{ .Values.controller.name }}
       containers:
       - name: scheduler-plugins-controller
         image: {{ .Values.controller.image }}
         imagePullPolicy: IfNotPresent
+        {{- with .Values.controller.resources }}
+        resources: {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- with .Values.controller.nodeSelector }}
-      nodeSelector: {{- toYaml . | nindent 8}}
+      nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.controller.affinity }}
-      affinity: {{- toYaml . | nindent 8}}
+      affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.controller.tolerations }}
-      tolerations: {{- toYaml . | nindent 8}}
+      tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
 
 ---
@@ -48,10 +54,13 @@ spec:
       labels:
         component: scheduler
     spec:
+      {{- with .Values.scheduler.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       serviceAccountName: {{ .Values.scheduler.name }}
       containers:
-      - command:
-        - /bin/kube-scheduler
+      - command: {{- toYaml .Values.scheduler.command | nindent 8 }}
+        args:
         - --config=/etc/kubernetes/scheduler-config.yaml
         image: {{ .Values.scheduler.image }}
         imagePullPolicy: IfNotPresent
@@ -67,9 +76,9 @@ spec:
             path: /healthz
             port: 10259
             scheme: HTTPS
-        resources:
-          requests:
-            cpu: '0.1'
+        {{- with .Values.scheduler.resources }}
+        resources: {{- toYaml . | nindent 10 }}
+        {{- end }}
         securityContext:
           privileged: false
         volumeMounts:
@@ -83,12 +92,11 @@ spec:
         configMap:
           name: scheduler-config
       {{- with .Values.scheduler.nodeSelector }}
-      nodeSelector: {{- toYaml . | nindent 8}}
+      nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.scheduler.affinity }}
-      affinity: {{- toYaml . | nindent 8}}
+      affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.scheduler.tolerations }}
-      tolerations: {{- toYaml . | nindent 8}}
+      tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
-      

@@ -15,22 +15,21 @@ import (
 )
 
 const (
-	Name          = "CarbonAware"
+	Name = "CarbonAware"
 	//prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
 
-	
-
-	ErrReason = "node(s) didn't have power for the requested pod ports"
-	constraints0PowerLimitStr = "rapl/constraint-0-power-limit-uw"
-	constraints0PowerLimitCStr = "crapl/constraint-1-power-limit-uw"
+	ErrReason                  = "node(s) didn't have power for the requested pod ports"
+	constraints0PowerLimitStr  = "rapl0/constraint-0-power-limit-uw"
+	constraints0PowerLimitCStr = "crapl0/constraint-1-power-limit-uw"
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
 var _ framework.FilterPlugin = &CarbonAware{}
 var _ framework.PreScorePlugin = &CarbonAware{}
 var _ framework.ScorePlugin = &CarbonAware{}
+
 //var _ framework.NodeScoreExtension = &CarbonAware{}
 
 /* EnergyMetrics holds the energy metrics for nodes
@@ -45,24 +44,23 @@ type EnergyMetrics struct {
 		} `json:"result"`
 	} `json:"data"`
 }
-	*/
+*/
 
 type CarbonAware struct {
-	handle        framework.Handle
-	prometheus    *PrometheusHandle
+	handle     framework.Handle
+	prometheus *PrometheusHandle
 }
 
-
 type NodeResources struct {
-    CPU    int64
-    Memory int64
+	CPU         int64
+	Memory      int64
 	APowerLimit int64
 	CPowerLimit int64
 }
 
 // preFilterState computed at PreFilter and used at Filter.
 type preFilterState struct {
-	res framework.Resource
+	res           framework.Resource
 	nodeResources map[string]NodeResources
 }
 
@@ -73,7 +71,7 @@ func (s *preFilterState) Clone() framework.StateData {
 
 // preScoreState computed at PreScore and used at Score.
 type preScoreState struct {
-	podInfo framework.Resource
+	podInfo       framework.Resource
 	nodeResources map[string]NodeResources
 }
 
@@ -83,13 +81,9 @@ func (s *preScoreState) Clone() framework.StateData {
 	return s
 }
 
-
-
 func (eas *CarbonAware) Name() string {
 	return Name
 }
-
-
 
 func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 
@@ -98,16 +92,14 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 		return nil, fmt.Errorf("[CarbonAware] want args to be of type CarbonAwareArgs, got %T", obj)
 	}
 
-
 	klog.Infof("[CarbonAware] args received.TimeRangeInMinutes: %d, Address: %s", args.TimeRangeInMinutes, args.Address)
 
 	return &CarbonAware{
-		handle:        handle,
-		prometheus:    NewPrometheus(args.Address, time.Minute*time.Duration(args.TimeRangeInMinutes)),
+		handle:     handle,
+		prometheus: NewPrometheus(args.Address, time.Minute*time.Duration(args.TimeRangeInMinutes)),
 	}, nil
 
 }
-
 
 func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (string, error) {
 	node, err := kcas.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
@@ -116,8 +108,6 @@ func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (st
 	}
 	return node.Node().Labels[labelKey], nil
 }
-
-
 
 func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 	// pod hasn't scheduled yet so we don't need to worry about InPlacePodVerticalScalingEnabled
@@ -129,11 +119,10 @@ func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 
 // Compute All resources
 func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framework.Status) {
-	
+
 	//nodeLimits := make(map[string]int)
 	//result := computePodResourceRequest(pod)
 	nodeRes := make(map[string]NodeResources)
-	
 
 	nodeInfos, err := kcas.handle.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
@@ -141,9 +130,9 @@ func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framewor
 		// Handle the error appropriately, e.g., return an error or continue with the loop.
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Error getting node infos: %v", err))
 	}
-	
+
 	for _, node := range nodeInfos {
-        nodeName := node.Node().Name
+		nodeName := node.Node().Name
 
 		constraints0PowerLimit, err := kcas.getNodeLabelValue(nodeName, constraints0PowerLimitStr)
 		if err != nil {
@@ -157,7 +146,6 @@ func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framewor
 			continue
 		}
 
-        
 		powerLimit, err := strconv.ParseInt(constraints0PowerLimit, 10, 64)
 		if err != nil {
 			klog.ErrorS(err, "Failed to parse power limit", "powerLimit", constraints0PowerLimit)
@@ -170,27 +158,27 @@ func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framewor
 			continue
 		}
 		// Get CPU and Memory information from the node
-        capacity := node.Node().Status.Capacity
-        cpu := capacity.Cpu().MilliValue()
-        memory := capacity.Memory().Value() // Convert memory from
+		capacity := node.Node().Status.Capacity
+		cpu := capacity.Cpu().MilliValue()
+		memory := capacity.Memory().Value() // Convert memory from
 
-        //nodeLimits[nodeName] = powerLimit
+		//nodeLimits[nodeName] = powerLimit
 		nodeRes[nodeName] = NodeResources{
-			CPU: cpu,
-			Memory: memory,
+			CPU:         cpu,
+			Memory:      memory,
 			APowerLimit: powerLimit,
 			CPowerLimit: powerLimitC,
 		}
-    }
+	}
 
 	//result.nodeResources = nodeRes
-	
+
 	return nodeRes, nil
 }
 
 // PreFilter invoked at the prefilter extension point.
 func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
-	
+
 	//nodeLimits := make(map[string]int)
 	result := computePodResourceRequest(pod)
 	nodeRes, err := kcas.computeResources()
@@ -198,7 +186,7 @@ func (kcas *CarbonAware) PreFilter(ctx context.Context, cycleState *framework.Cy
 		return nil, err
 	}
 	result.nodeResources = nodeRes
-	
+
 	cycleState.Write(preFilterStateKey, result)
 	return nil, nil
 }
@@ -222,9 +210,6 @@ func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error
 	return s, nil
 }
 
-
-
-
 // Filter implements framework.FilterPlugin.
 func (kcas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	// Get the prefilter state.
@@ -239,9 +224,9 @@ func (kcas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState
 	return nil
 }
 
-func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framework.NodeInfo ) bool {
+func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framework.NodeInfo) bool {
 	nodeName := nodeInfo.Node().Name
-	
+
 	//nodeRes,err = wantPower.nodeResources[nodeName]
 	prometheus := kcas.prometheus
 	nodeActualConsumption, err := prometheus.GetTotalConsumptionNodeEnergy(nodeName)
@@ -259,14 +244,14 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podCPU := podInfo.MilliCPU
 	podMemory := podInfo.Memory
 	// calculate the power needed by the pod
-	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	// check if the node has enough power for the pod
 	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
 	return pr_i >= podPower
 }
 
 // PreScore implements framework.PreScorePlugin.
-func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status {
 	// Get the prefilter state.
 	preFilterState, err := getPreFilterState(state)
 	if err != nil {
@@ -279,7 +264,7 @@ func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleSta
 	// Filter out nodes that didn't pass the Filter phase.
 	filteredNodeResources := make(map[string]NodeResources)
 	for _, node := range nodes {
-		nodeName := node.Name
+		nodeName := node.Node().Name
 		if nodeRes, ok := preFilterState.nodeResources[nodeName]; ok {
 			filteredNodeResources[nodeName] = nodeRes
 		}
@@ -333,7 +318,7 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 	podCPU := preScoreState.podInfo.MilliCPU
 	podMemory := preScoreState.podInfo.Memory
 
-	podPower := nodeRes.CPowerLimit* (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	//podPower = podPower // convert to appropriate unit
 	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
 
@@ -342,49 +327,40 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 	return score, nil
 }
 
-
-
-
-
 func (eas *CarbonAware) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-
 // NormalizeScore normalizes the scores of nodes based on their power availability.
 func (kcas *CarbonAware) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
-    if len(scores) == 0 {
-        return framework.NewStatus(framework.Error, "no scores to normalize")
-    }
+	if len(scores) == 0 {
+		return framework.NewStatus(framework.Error, "no scores to normalize")
+	}
 
-    // Find the min and max scores
-    minScore, maxScore := scores[0].Score, scores[0].Score
-    for _, nodeScore := range scores {
-        if nodeScore.Score < minScore {
-            minScore = nodeScore.Score
-        }
-        if nodeScore.Score > maxScore {
-            maxScore = nodeScore.Score
-        }
-    }
+	// Find the min and max scores
+	minScore, maxScore := scores[0].Score, scores[0].Score
+	for _, nodeScore := range scores {
+		if nodeScore.Score < minScore {
+			minScore = nodeScore.Score
+		}
+		if nodeScore.Score > maxScore {
+			maxScore = nodeScore.Score
+		}
+	}
 
-    // Normalize the scores
-    scoreRange := maxScore - minScore
-    if scoreRange == 0 {
-        // All scores are the same, set all to the highest possible value
-        for i := range scores {
-            scores[i].Score = framework.MaxNodeScore
-        }
-    } else {
-        for i := range scores {
-            normalizedScore := float64(scores[i].Score-minScore) / float64(scoreRange) 
-            scores[i].Score = int64(normalizedScore)
-        }
-    }
+	// Normalize the scores
+	scoreRange := maxScore - minScore
+	if scoreRange == 0 {
+		// All scores are the same, set all to the highest possible value
+		for i := range scores {
+			scores[i].Score = framework.MaxNodeScore
+		}
+	} else {
+		for i := range scores {
+			normalizedScore := float64(scores[i].Score-minScore) / float64(scoreRange)
+			scores[i].Score = int64(normalizedScore)
+		}
+	}
 
-    return nil
+	return nil
 }
-
-
-
-

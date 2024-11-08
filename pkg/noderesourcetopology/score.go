@@ -23,6 +23,7 @@ import (
 	"gonum.org/v1/gonum/stat"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
@@ -31,6 +32,7 @@ import (
 	"github.com/go-logr/logr"
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/logging"
+	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/nodeconfig"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/stringify"
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
 )
@@ -59,7 +61,9 @@ func (rw resourceToWeightMap) weight(r v1.ResourceName) int64 {
 }
 
 func (tm *TopologyMatch) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	lh := logging.Log().WithValues(logging.KeyLogID, logging.PodLogID(pod), logging.KeyPodUID, pod.GetUID(), logging.KeyNode, nodeName, logging.KeyFlow, logging.FlowScore)
+	// the scheduler framework will add the node/name key/value pair
+	lh := klog.FromContext(ctx).WithValues(logging.KeyPod, klog.KObj(pod), logging.KeyPodUID, logging.PodUID(pod))
+
 	lh.V(4).Info(logging.FlowBegin)
 	defer lh.V(4).Info(logging.FlowEnd)
 
@@ -69,9 +73,9 @@ func (tm *TopologyMatch) Score(ctx context.Context, state *framework.CycleState,
 		return framework.MaxNodeScore, nil
 	}
 
-	nodeTopology, ok := tm.nrtCache.GetCachedNRTCopy(ctx, nodeName, pod)
-
-	if !ok {
+	nodeTopology, info := tm.nrtCache.GetCachedNRTCopy(ctx, nodeName, pod)
+	lh = lh.WithValues(logging.KeyGeneration, info.Generation)
+	if !info.Fresh {
 		lh.V(4).Info("noderesourcetopology is not valid for node")
 		return 0, nil
 	}
@@ -82,7 +86,7 @@ func (tm *TopologyMatch) Score(ctx context.Context, state *framework.CycleState,
 
 	lh.V(6).Info("found object", "noderesourcetopology", stringify.NodeResourceTopologyResources(nodeTopology))
 
-	handler := tm.scoringHandlerFromTopologyManagerConfig(topologyManagerConfigFromNodeResourceTopology(lh, nodeTopology))
+	handler := tm.scoringHandlerFromTopologyManagerConfig(nodeconfig.TopologyManagerFromNodeResourceTopology(lh, nodeTopology))
 	if handler == nil {
 		return 0, nil
 	}
@@ -135,7 +139,7 @@ func podScopeScore(lh logr.Logger, pod *v1.Pod, zones topologyv1alpha2.ZoneList,
 
 	allocatablePerNUMA := createNUMANodeList(lh, zones)
 	finalScore := scoreForEachNUMANode(lh, resources, allocatablePerNUMA, scorerFn, resourceToWeightMap)
-	lh.V(5).Info("pod scope scoring final node score", "finalScore", finalScore)
+	lh.V(2).Info("pod scope scoring final node score", "finalScore", finalScore)
 	return finalScore, nil
 }
 
@@ -151,11 +155,11 @@ func containerScopeScore(lh logr.Logger, pod *v1.Pod, zones topologyv1alpha2.Zon
 		lh.V(6).Info("container scope scoring", "container", container.Name, "score", contScore[i])
 	}
 	finalScore := int64(stat.Mean(contScore, nil))
-	lh.V(5).Info("container scope scoring final node score", "finalScore", finalScore)
+	lh.V(2).Info("container scope scoring final node score", "finalScore", finalScore)
 	return finalScore, nil
 }
 
-func (tm *TopologyMatch) scoringHandlerFromTopologyManagerConfig(conf TopologyManagerConfig) scoringFn {
+func (tm *TopologyMatch) scoringHandlerFromTopologyManagerConfig(conf nodeconfig.TopologyManager) scoringFn {
 	if tm.scoreStrategyType == apiconfig.LeastNUMANodes {
 		if conf.Scope == kubeletconfig.PodTopologyManagerScope {
 			return leastNUMAPodScopeScore

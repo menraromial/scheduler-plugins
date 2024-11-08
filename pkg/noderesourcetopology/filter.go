@@ -20,8 +20,7 @@ import (
 	"context"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
+	"k8s.io/klog/v2"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	bm "k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
@@ -30,6 +29,7 @@ import (
 	"github.com/go-logr/logr"
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/logging"
+	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/nodeconfig"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/resourcerequests"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/stringify"
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
@@ -55,30 +55,37 @@ func singleNUMAContainerLevelHandler(lh logr.Logger, pod *v1.Pod, zones topology
 	// https://kubernetes.io/docs/concepts/workloads/pods/init-containers/#understanding-init-containers
 	// therefore, we don't need to accumulate their resources together
 	for _, initContainer := range pod.Spec.InitContainers {
-		lh.V(6).Info("init container desired resources", stringify.ResourceListToLoggable(initContainer.Resources.Requests)...)
+		// TODO: handle sidecar explicitely (new kind)
+		clh := lh.WithValues(logging.KeyContainer, initContainer.Name, logging.KeyContainerKind, logging.KindContainerInit)
+		clh.V(6).Info("desired resources", stringify.ResourceListToLoggable(initContainer.Resources.Requests)...)
 
-		_, match := resourcesAvailableInAnyNUMANodes(lh, nodes, initContainer.Resources.Requests, qos, nodeInfo)
+		_, match := resourcesAvailableInAnyNUMANodes(clh, nodes, initContainer.Resources.Requests, qos, nodeInfo)
 		if !match {
 			// we can't align init container, so definitely we can't align a pod
-			lh.V(2).Info("cannot align container", "name", initContainer.Name, "kind", "init")
+			clh.V(2).Info("cannot align container")
 			return framework.NewStatus(framework.Unschedulable, "cannot align init container")
 		}
 	}
 
 	for _, container := range pod.Spec.Containers {
-		// TODO: add containerName
-		lh.V(6).Info("app container resources", stringify.ResourceListToLoggable(container.Resources.Requests)...)
+		clh := lh.WithValues(logging.KeyContainer, container.Name, logging.KeyContainerKind, logging.KindContainerApp)
+		clh.V(6).Info("container requests", stringify.ResourceListToLoggable(container.Resources.Requests)...)
 
-		numaID, match := resourcesAvailableInAnyNUMANodes(lh, nodes, container.Resources.Requests, qos, nodeInfo)
+		numaID, match := resourcesAvailableInAnyNUMANodes(clh, nodes, container.Resources.Requests, qos, nodeInfo)
 		if !match {
 			// we can't align container, so definitely we can't align a pod
-			lh.V(2).Info("cannot align container", "name", container.Name, "kind", "app")
+			clh.V(2).Info("cannot align container")
 			return framework.NewStatus(framework.Unschedulable, "cannot align container")
 		}
 
 		// subtract the resources requested by the container from the given NUMA.
 		// this is necessary, so we won't allocate the same resources for the upcoming containers
-		subtractFromNUMA(lh, nodes, numaID, container)
+		err := subtractResourcesFromNUMANodeList(clh, nodes, numaID, qos, container.Resources.Requests)
+		if err != nil {
+			// this is an internal error which should never happen
+			return framework.NewStatus(framework.Error, "inconsistent resource accounting", err.Error())
+		}
+		clh.V(4).Info("container aligned", "numaCell", numaID)
 	}
 	return nil
 }
@@ -105,7 +112,7 @@ func resourcesAvailableInAnyNUMANodes(lh logr.Logger, numaNodes NUMANodeList, re
 			// some resources may not expose NUMA affinity (device plugins, extended resources), but all resources
 			// must be reported at node level; thus, if they are not present at node level, we can safely assume
 			// we don't have the resource at all.
-			lh.V(5).Info("early verdict: cannot meet request", "resource", resource, "suitable", "false")
+			lh.V(2).Info("early verdict: cannot meet request", "resource", resource, "suitable", "false")
 			return numaID, false
 		}
 
@@ -130,14 +137,14 @@ func resourcesAvailableInAnyNUMANodes(lh logr.Logger, numaNodes NUMANodeList, re
 
 		// non-native resources or ephemeral-storage may not expose NUMA affinity,
 		// but since they are available at node level, this is fine
-		if !hasNUMAAffinity && (!v1helper.IsNativeResource(resource) || resource == v1.ResourceEphemeralStorage) {
-			lh.V(6).Info("resource available at node level (no NUMA affinity)", "resource", resource)
+		if !hasNUMAAffinity && isHostLevelResource(resource) {
+			lh.V(6).Info("resource available at host level (no NUMA affinity)", "resource", resource)
 			continue
 		}
 
 		bitmask.And(resourceBitmask)
 		if bitmask.IsEmpty() {
-			lh.V(5).Info("early verdict", "resource", resource, "suitable", "false")
+			lh.V(2).Info("early verdict", "resource", resource, "suitable", "false")
 			return numaID, false
 		}
 	}
@@ -149,27 +156,8 @@ func resourcesAvailableInAnyNUMANodes(lh logr.Logger, numaNodes NUMANodeList, re
 
 	// at least one NUMA node is available
 	ret := !bitmask.IsEmpty()
-	lh.V(5).Info("final verdict", "suitable", ret)
+	lh.V(2).Info("final verdict", "suitable", ret, "numaCell", numaID)
 	return numaID, ret
-}
-
-func isResourceSetSuitable(qos v1.PodQOSClass, resource v1.ResourceName, quantity, numaQuantity resource.Quantity) bool {
-	// Check for the following:
-	if qos != v1.PodQOSGuaranteed {
-		// 1. set numa node as possible node if resource is memory or Hugepages
-		if resource == v1.ResourceMemory {
-			return true
-		}
-		if v1helper.IsHugePageResourceName(resource) {
-			return true
-		}
-		// 2. set numa node as possible node if resource is CPU
-		if resource == v1.ResourceCPU {
-			return true
-		}
-	}
-	// 3. otherwise check amount of resources
-	return numaQuantity.Cmp(quantity) >= 0
 }
 
 func singleNUMAPodLevelHandler(lh logr.Logger, pod *v1.Pod, zones topologyv1alpha2.ZoneList, nodeInfo *framework.NodeInfo) *framework.Status {
@@ -183,10 +171,12 @@ func singleNUMAPodLevelHandler(lh logr.Logger, pod *v1.Pod, zones topologyv1alph
 	logNumaNodes(lh, "pod handler NUMA resources", nodeInfo.Node().Name, nodes)
 	lh.V(6).Info("pod desired resources", stringify.ResourceListToLoggable(resources)...)
 
-	if _, match := resourcesAvailableInAnyNUMANodes(lh, createNUMANodeList(lh, zones), resources, v1qos.GetPodQOS(pod), nodeInfo); !match {
+	numaID, match := resourcesAvailableInAnyNUMANodes(lh, createNUMANodeList(lh, zones), resources, v1qos.GetPodQOS(pod), nodeInfo)
+	if !match {
 		lh.V(2).Info("cannot align pod", "name", pod.Name)
 		return framework.NewStatus(framework.Unschedulable, "cannot align pod")
 	}
+	lh.V(4).Info("all container placed", "numaCell", numaID)
 	return nil
 }
 
@@ -201,12 +191,14 @@ func (tm *TopologyMatch) Filter(ctx context.Context, cycleState *framework.Cycle
 
 	nodeName := nodeInfo.Node().Name
 
-	lh := logging.Log().WithValues(logging.KeyLogID, logging.PodLogID(pod), logging.KeyPodUID, pod.GetUID(), logging.KeyNode, nodeName, logging.KeyFlow, logging.FlowFilter)
+	lh := klog.FromContext(ctx).WithValues(logging.KeyPod, klog.KObj(pod), logging.KeyPodUID, logging.PodUID(pod), logging.KeyNode, nodeName)
+
 	lh.V(4).Info(logging.FlowBegin)
 	defer lh.V(4).Info(logging.FlowEnd)
 
-	nodeTopology, ok := tm.nrtCache.GetCachedNRTCopy(ctx, nodeName, pod)
-	if !ok {
+	nodeTopology, info := tm.nrtCache.GetCachedNRTCopy(ctx, nodeName, pod)
+	lh = lh.WithValues(logging.KeyGeneration, info.Generation)
+	if !info.Fresh {
 		lh.V(2).Info("invalid topology data")
 		return framework.NewStatus(framework.Unschedulable, "invalid node topology data")
 	}
@@ -214,9 +206,11 @@ func (tm *TopologyMatch) Filter(ctx context.Context, cycleState *framework.Cycle
 		return nil
 	}
 
-	lh.V(5).Info("found nrt data", "object", stringify.NodeResourceTopologyResources(nodeTopology))
+	conf := nodeconfig.TopologyManagerFromNodeResourceTopology(lh, nodeTopology)
 
-	handler := filterHandlerFromTopologyManagerConfig(topologyManagerConfigFromNodeResourceTopology(lh, nodeTopology))
+	lh.V(4).Info("found nrt data", "object", stringify.NodeResourceTopologyResources(nodeTopology), "conf", conf.String())
+
+	handler := filterHandlerFromTopologyManager(conf)
 	if handler == nil {
 		return nil
 	}
@@ -227,29 +221,7 @@ func (tm *TopologyMatch) Filter(ctx context.Context, cycleState *framework.Cycle
 	return status
 }
 
-// subtractFromNUMA finds the correct NUMA ID's resources and subtract them from `nodes`.
-func subtractFromNUMA(lh logr.Logger, nodes NUMANodeList, numaID int, container v1.Container) {
-	for i := 0; i < len(nodes); i++ {
-		if nodes[i].NUMAID != numaID {
-			continue
-		}
-
-		nRes := nodes[i].Resources
-		for resName, quan := range container.Resources.Requests {
-			nodeResQuan := nRes[resName]
-			nodeResQuan.Sub(quan)
-			// we do not expect a negative value here, since this function only called
-			// when resourcesAvailableInAnyNUMANodes function is passed
-			// but let's log here if such unlikely case will occur
-			if nodeResQuan.Sign() == -1 {
-				lh.V(4).Info("resource quantity should not be a negative value", "resource", resName, "quantity", nodeResQuan.String())
-			}
-			nRes[resName] = nodeResQuan
-		}
-	}
-}
-
-func filterHandlerFromTopologyManagerConfig(conf TopologyManagerConfig) filterFn {
+func filterHandlerFromTopologyManager(conf nodeconfig.TopologyManager) filterFn {
 	if conf.Policy != kubeletconfig.SingleNumaNodeTopologyManagerPolicy {
 		return nil
 	}

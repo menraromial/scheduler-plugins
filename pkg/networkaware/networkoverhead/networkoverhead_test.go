@@ -286,8 +286,8 @@ func GetAppGroupCROnlineBoutique() *agv1alpha1.AppGroup {
 			},
 		},
 		Status: agv1alpha1.AppGroupStatus{
-			ScheduleStartTime:       metav1.Time{time.Now()},
-			TopologyCalculationTime: metav1.Time{time.Now()},
+			ScheduleStartTime:       metav1.Now(),
+			TopologyCalculationTime: metav1.Now(),
 			TopologyOrder: agv1alpha1.AppGroupTopologyList{
 				agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1-deployment", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
 				agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p10-deployment", Selector: "p10", APIVersion: "apps/v1", Namespace: "default"}, Index: 2},
@@ -330,8 +330,9 @@ func GetAppGroupCRBasic() *agv1alpha1.AppGroup {
 			},
 		},
 		Status: agv1alpha1.AppGroupStatus{
-			RunningWorkloads:  3,
-			ScheduleStartTime: metav1.Time{time.Now()}, TopologyCalculationTime: metav1.Time{time.Now()},
+			RunningWorkloads:        3,
+			ScheduleStartTime:       metav1.Now(),
+			TopologyCalculationTime: metav1.Now(),
 			TopologyOrder: agv1alpha1.AppGroupTopologyList{
 				agv1alpha1.AppGroupTopologyInfo{
 					Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1-deployment", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
@@ -549,7 +550,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			state := framework.NewCycleState()
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)
@@ -767,7 +768,7 @@ func TestNetworkOverheadScore(t *testing.T) {
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				t.Errorf("pods not scheduled yet: %v ", err)
@@ -1016,7 +1017,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			state := framework.NewCycleState()
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)
@@ -1245,7 +1246,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				t.Errorf("pods not scheduled yet: %v ", err)
@@ -1471,7 +1472,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)

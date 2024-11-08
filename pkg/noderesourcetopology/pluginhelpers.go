@@ -17,6 +17,7 @@ limitations under the License.
 package noderesourcetopology
 
 import (
+	"context"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,7 @@ import (
 
 	apiconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 	nrtcache "sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/cache"
+	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/logging"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/podprovider"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/stringify"
 )
@@ -40,24 +42,25 @@ const (
 	maxNUMAId = 64
 )
 
-func initNodeTopologyInformer(lh logr.Logger, tcfg *apiconfig.NodeResourceTopologyMatchArgs, handle framework.Handle) (nrtcache.Interface, error) {
-	client, err := ctrlclient.New(handle.KubeConfig(), ctrlclient.Options{Scheme: scheme})
+func initNodeTopologyInformer(ctx context.Context, lh logr.Logger,
+	tcfg *apiconfig.NodeResourceTopologyMatchArgs, handle framework.Handle) (nrtcache.Interface, error) {
+	client, err := ctrlclient.NewWithWatch(handle.KubeConfig(), ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		lh.Error(err, "cannot create client for NodeTopologyResource", "kubeConfig", handle.KubeConfig())
 		return nil, err
 	}
 
 	if tcfg.DiscardReservedNodes {
-		return nrtcache.NewDiscardReserved(lh.WithName("nrtcache"), client), nil
+		return nrtcache.NewDiscardReserved(lh.WithName(logging.SubsystemNRTCache), client), nil
 	}
 
 	if tcfg.CacheResyncPeriodSeconds <= 0 {
-		return nrtcache.NewPassthrough(lh.WithName("nrtcache"), client), nil
+		return nrtcache.NewPassthrough(lh.WithName(logging.SubsystemNRTCache), client), nil
 	}
 
 	podSharedInformer, podLister, isPodRelevant := podprovider.NewFromHandle(lh, handle, tcfg.Cache)
 
-	nrtCache, err := nrtcache.NewOverReserve(lh.WithName("nrtcache"), tcfg.Cache, client, podLister, isPodRelevant)
+	nrtCache, err := nrtcache.NewOverReserve(ctx, lh.WithName(logging.SubsystemNRTCache), tcfg.Cache, client, podLister, isPodRelevant)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +96,8 @@ func initNodeTopologyForeignPodsDetection(lh logr.Logger, cfg *apiconfig.NodeRes
 	} else {
 		nrtcache.TrackAllForeignPods()
 	}
-	nrtcache.RegisterSchedulerProfileName(lh.WithName("foreignpods"), profileName)
-	nrtcache.SetupForeignPodsDetector(lh.WithName("foreignpods"), profileName, podSharedInformer, nrtCache)
+	nrtcache.RegisterSchedulerProfileName(lh.WithName(logging.SubsystemForeignPods), profileName)
+	nrtcache.SetupForeignPodsDetector(lh.WithName(logging.SubsystemForeignPods), profileName, podSharedInformer, nrtCache)
 }
 
 func createNUMANodeList(lh logr.Logger, zones topologyv1alpha2.ZoneList) NUMANodeList {
