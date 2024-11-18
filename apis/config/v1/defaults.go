@@ -102,6 +102,9 @@ var (
 	DefaultSySchedProfileNamespace = "default"
 	// DefaultSySchedProfileName is the name of the default syscall profile CR for SySched plugin
 	DefaultSySchedProfileName = "all-syscalls"
+
+	defaultPrometheusAddress = "http://localhost:9090"
+	defaultTimeRangeInMinutes = int64(1)
 )
 
 // SetDefaults_CoschedulingArgs sets the default parameters for Coscheduling plugin.
@@ -252,14 +255,12 @@ func SetDefaults_SySchedArgs(obj *SySchedArgs) {
 }
 
 // SetDefaultCarbonAwareArgs sets the default parameters for the NetworkTraffic plugin
-func SetDefaultCarbonAwareArgs(args *CarbonAwareArgs) {
+func SetDefaults_CarbonAwareArgs(args *CarbonAwareArgs) {
 	if args.TimeRangeInMinutes == nil {
-		defaultTime := int64(1)
-		args.TimeRangeInMinutes = &defaultTime
+		args.TimeRangeInMinutes = &defaultTimeRangeInMinutes
 	}
 	if args.Address == nil {
-		defaultAddress := "http://localhost:9090"
-		args.Address = &defaultAddress
+		args.Address = &defaultPrometheusAddress
 	}
 
 }
