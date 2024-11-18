@@ -19,8 +19,6 @@ package v1
 import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	schedulerconfigv1 "k8s.io/kube-scheduler/config/v1"
 )
 
@@ -290,13 +288,11 @@ type CarbonAwareArgs struct {
 }
 
 // DeepCopyObject implements runtime.Object.
-func (c *CarbonAwareArgs) DeepCopyObject() runtime.Object {
-	panic("unimplemented")
-}
+
 
 // GetObjectKind implements runtime.Object.
 // Subtle: this method shadows the method (TypeMeta).GetObjectKind of CarbonAwareArgs.TypeMeta.
-func (CarbonAwareArgs) GetObjectKind() schema.ObjectKind {
-    return &CarbonAwareArgs{}
-}
+// func (CarbonAwareArgs) GetObjectKind() schema.ObjectKind {
+//     return &CarbonAwareArgs{}
+// }
 

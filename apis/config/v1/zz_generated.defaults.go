@@ -45,9 +45,6 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 	scheme.AddTypeDefaultingFunc(&SySchedArgs{}, func(obj interface{}) { SetObjectDefaults_SySchedArgs(obj.(*SySchedArgs)) })
 	scheme.AddTypeDefaultingFunc(&TargetLoadPackingArgs{}, func(obj interface{}) { SetObjectDefaults_TargetLoadPackingArgs(obj.(*TargetLoadPackingArgs)) })
 	scheme.AddTypeDefaultingFunc(&TopologicalSortArgs{}, func(obj interface{}) { SetObjectDefaults_TopologicalSortArgs(obj.(*TopologicalSortArgs)) })
-	scheme.AddTypeDefaultingFunc(&CarbonAwareArgs{}, func(obj interface{}) {
-		SetDefaultCarbonAwareArgs(obj.(*CarbonAwareArgs))
-	})
 	return nil
 }
 
@@ -89,9 +86,4 @@ func SetObjectDefaults_TargetLoadPackingArgs(in *TargetLoadPackingArgs) {
 
 func SetObjectDefaults_TopologicalSortArgs(in *TopologicalSortArgs) {
 	SetDefaults_TopologicalSortArgs(in)
-}
-
-
-func SetObjectDefaultCarbonAwareArgs(in *CarbonAwareArgs) {
-	SetDefaultCarbonAwareArgs(in)
 }
