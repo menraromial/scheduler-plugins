@@ -296,6 +296,7 @@ func (c *CarbonAwareArgs) DeepCopyObject() runtime.Object {
 
 // GetObjectKind implements runtime.Object.
 // Subtle: this method shadows the method (TypeMeta).GetObjectKind of CarbonAwareArgs.TypeMeta.
-func (c *CarbonAwareArgs) GetObjectKind() schema.ObjectKind {
-	panic("unimplemented")
+func (CarbonAwareArgs) GetObjectKind() schema.ObjectKind {
+    return &CarbonAwareArgs{}
 }
+
