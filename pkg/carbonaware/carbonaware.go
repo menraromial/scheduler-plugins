@@ -3,10 +3,13 @@ package carbonaware
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
+
 	//"time"
 
 	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
@@ -87,6 +90,10 @@ func (eas *CarbonAware) Name() string {
 	return Name
 }
 
+func (kcas *CarbonAware) ScoreExtensions() framework.ScoreExtensions {
+	return kcas
+}
+
 func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 
 	args, ok := obj.(*config.CarbonAwareArgs)
@@ -150,7 +157,7 @@ func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framewor
 
 		powerLimit, err := strconv.ParseInt(constraints0PowerLimit, 10, 64)
 		if err != nil {
-			klog.ErrorS(err, "Failed to parse power limit", "powerLimit", constraints0PowerLimit)
+			klog.ErrorS(err, "Failed to parse power limit", "powerLimit", constraints0PowerLimit, "nodeName", nodeName)
 			continue
 		}
 
@@ -215,6 +222,7 @@ func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error
 // Filter implements framework.FilterPlugin.
 func (kcas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	// Get the prefilter state.
+	klog.V(4).Info("Filtering node", "node", nodeInfo.Node().Name, "pod", pod.Name)
 	wantPower, err := getPreFilterState(state)
 	if err != nil {
 		return framework.AsStatus(err)
@@ -249,6 +257,8 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	// check if the node has enough power for the pod
 	prI := nodeRes.CPowerLimit - nodeActualConsumption
+
+	klog.V(4).Info("FitsPower:", "node", nodeName, "prI", prI, "podPower", podPower)
 	return prI >= podPower
 }
 
@@ -299,6 +309,7 @@ func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) 
 // Score implements framework.ScorePlugin.
 func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
 	// Implement the scoring logic based on power consumption.
+	
 	prometheus := kcas.prometheus
 	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
 	if err != nil {
@@ -326,43 +337,91 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 
 	score := pr_i - podPower
 
+	klog.V(4).Info("Score:", "pod", p.GetName(), "node", nodeName, "finalScore", score)
+
+
 	return score, nil
 }
 
-func (eas *CarbonAware) ScoreExtensions() framework.ScoreExtensions {
-	return nil
+
+// // NormalizeScore normalizes the scores of nodes based on their power availability.
+// func (kcas *CarbonAware) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
+// 	if len(scores) == 0 {
+// 		return framework.NewStatus(framework.Error, "no scores to normalize")
+// 	}
+
+// 	// Find the min and max scores
+// 	minScore, maxScore := scores[0].Score, scores[0].Score
+// 	for _, nodeScore := range scores {
+// 		if nodeScore.Score < minScore {
+// 			minScore = nodeScore.Score
+// 		}
+// 		if nodeScore.Score > maxScore {
+// 			maxScore = nodeScore.Score
+// 		}
+// 	}
+
+// 	// Normalize the scores
+// 	scoreRange := maxScore - minScore
+// 	if scoreRange == 0 {
+// 		// All scores are the same, set all to the highest possible value
+// 		for i := range scores {
+// 			scores[i].Score = 100
+// 		}
+// 	} else {
+// 		for i := range scores {
+// 			normalizedScore := float64(scores[i].Score-minScore) / float64(scoreRange)
+// 			scores[i].Score = int64(normalizedScore)
+// 		}
+// 	}
+
+// 	return nil
+// }
+
+// MinMax : get min and max scores from NodeScoreList
+func getMinMaxScores(scores framework.NodeScoreList) (int64, int64) {
+	var max int64 = math.MinInt64 // Set to min value
+	var min int64 = math.MaxInt64 // Set to max value
+
+	for _, nodeScore := range scores {
+		if nodeScore.Score > max {
+			max = nodeScore.Score
+		}
+		if nodeScore.Score < min {
+			min = nodeScore.Score
+		}
+	}
+	// return min and max scores
+	return min, max
 }
 
-// NormalizeScore normalizes the scores of nodes based on their power availability.
-func (kcas *CarbonAware) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
-	if len(scores) == 0 {
-		return framework.NewStatus(framework.Error, "no scores to normalize")
+// NormalizeScore : normalize scores since lower scores correspond to lower latency
+func (kcas *CarbonAware) NormalizeScore(ctx context.Context,
+	state *framework.CycleState,
+	pod *corev1.Pod,
+	scores framework.NodeScoreList) *framework.Status {
+	logger := klog.FromContext(ctx)
+	logger.V(4).Info("before normalization: ", "scores", scores)
+
+	// Get Min and Max Scores to normalize between framework.MaxNodeScore and framework.MinNodeScore
+	minCost, maxCost := getMinMaxScores(scores)
+
+	// If all nodes were given the minimum score, return
+	if minCost == 0 && maxCost == 0 {
+		return nil
 	}
 
-	// Find the min and max scores
-	minScore, maxScore := scores[0].Score, scores[0].Score
-	for _, nodeScore := range scores {
-		if nodeScore.Score < minScore {
-			minScore = nodeScore.Score
-		}
-		if nodeScore.Score > maxScore {
-			maxScore = nodeScore.Score
-		}
-	}
-
-	// Normalize the scores
-	scoreRange := maxScore - minScore
-	if scoreRange == 0 {
-		// All scores are the same, set all to the highest possible value
-		for i := range scores {
-			scores[i].Score = framework.MaxNodeScore
-		}
-	} else {
-		for i := range scores {
-			normalizedScore := float64(scores[i].Score-minScore) / float64(scoreRange)
-			scores[i].Score = int64(normalizedScore)
+	var normCost float64
+	for i := range scores {
+		if maxCost != minCost { // If max != min
+			// node_normalized_cost = MAX_SCORE * ( ( nodeScore - minCost) / (maxCost - minCost)
+			normCost = float64(framework.MaxNodeScore) * float64(scores[i].Score-minCost) / float64(maxCost-minCost)
+			scores[i].Score = int64(normCost)
+		} else { // If maxCost = minCost, avoid division by 0
+			
+			scores[i].Score = framework.MaxNodeScore 
 		}
 	}
-
+	logger.V(4).Info("after normalization: ", "scores", scores)
 	return nil
 }
