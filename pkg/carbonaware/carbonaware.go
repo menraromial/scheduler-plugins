@@ -240,6 +240,7 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	//nodeRes,err = wantPower.nodeResources[nodeName]
 	prometheus := kcas.prometheus
 	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
+	klog.V(4).Info("FitsPower: ","node name: ",nodeName, " , nodeActualConsumption: ", nodeActualConsumption)
 	if err != nil {
 		klog.Errorf("[CarbonAware] Error getting node power: %v", err)
 		return false
@@ -254,13 +255,15 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podCPU := podInfo.MilliCPU
 	podMemory := podInfo.Memory
 
-	klog.V(4).Info("FitsPower: ",  "podCPU ", podCPU, "podMemory ", podMemory)
+	klog.V(4).Info("FitsPower: ",  "podCPU: ", podCPU, " , podMemory: ", podMemory)
+	klog.V(4).Info("FitsPower: ", "node CPU: ", nodeRes.CPU, " , node Memory: ", nodeRes.Memory)
+	klog.V(4).Info("FitsPower: ", "node APowerLimit: ", nodeRes.APowerLimit, " , node CPowerLimit: ", nodeRes.CPowerLimit)
 	// calculate the power needed by the pod
 	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	// check if the node has enough power for the pod
-	prI := nodeRes.CPowerLimit - nodeActualConsumption
+	prI := nodeRes.APowerLimit - nodeActualConsumption
 
-	klog.V(4).Info("FitsPower: ", "node ", nodeName, "prI ", prI, "podPower ", podPower)
+	klog.V(4).Info("FitsPower: ", "node: ", nodeName, " , prI: ", prI, " , podPower: ", podPower)
 	return prI >= podPower
 }
 
@@ -311,7 +314,7 @@ func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) 
 // Score implements framework.ScorePlugin.
 func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
 	// Implement the scoring logic based on power consumption.
-	
+	//klog.V(4).Info("Scoring phase")
 	prometheus := kcas.prometheus
 	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
 	if err != nil {
@@ -339,7 +342,7 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 
 	score := prI - podPower
 
-	klog.V(4).Info("Score: ", "pod ", p.GetName(), "node ", nodeName, "finalScore ", score)
+	klog.V(4).Info("Score: ", "pod: ", p.GetName(), " , node: ", nodeName, " , finalScore: ", score)
 
 
 	return score, nil
