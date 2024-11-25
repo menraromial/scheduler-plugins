@@ -253,12 +253,14 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	// Get the CPU and Memory information requested by the pod
 	podCPU := podInfo.MilliCPU
 	podMemory := podInfo.Memory
+
+	klog.V(4).Info("FitsPower: ",  "podCPU ", podCPU, "podMemory ", podMemory)
 	// calculate the power needed by the pod
 	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	// check if the node has enough power for the pod
 	prI := nodeRes.CPowerLimit - nodeActualConsumption
 
-	klog.V(4).Info("FitsPower:", "node", nodeName, "prI", prI, "podPower", podPower)
+	klog.V(4).Info("FitsPower: ", "node ", nodeName, "prI ", prI, "podPower ", podPower)
 	return prI >= podPower
 }
 
@@ -333,11 +335,11 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 
 	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
 	//podPower = podPower // convert to appropriate unit
-	pr_i := nodeRes.CPowerLimit - nodeActualConsumption
+	prI := nodeRes.APowerLimit - nodeActualConsumption
 
-	score := pr_i - podPower
+	score := prI - podPower
 
-	klog.V(4).Info("Score:", "pod", p.GetName(), "node", nodeName, "finalScore", score)
+	klog.V(4).Info("Score: ", "pod ", p.GetName(), "node ", nodeName, "finalScore ", score)
 
 
 	return score, nil
@@ -401,7 +403,7 @@ func (kcas *CarbonAware) NormalizeScore(ctx context.Context,
 	pod *corev1.Pod,
 	scores framework.NodeScoreList) *framework.Status {
 	logger := klog.FromContext(ctx)
-	logger.V(4).Info("before normalization: ", "scores", scores)
+	logger.V(4).Info("before normalization: ", "scores ", scores)
 
 	// Get Min and Max Scores to normalize between framework.MaxNodeScore and framework.MinNodeScore
 	minCost, maxCost := getMinMaxScores(scores)
@@ -422,6 +424,6 @@ func (kcas *CarbonAware) NormalizeScore(ctx context.Context,
 			scores[i].Score = framework.MaxNodeScore 
 		}
 	}
-	logger.V(4).Info("after normalization: ", "scores", scores)
+	logger.V(4).Info("after normalization: ", "scores ", scores)
 	return nil
 }
