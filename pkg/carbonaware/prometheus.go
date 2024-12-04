@@ -24,7 +24,7 @@ const (
 
 
 	WATT_TO_MICROWATT = 1e+6
-	timeElapsed = 30.0
+	timeElapsed = 60.0
 )
 
 
@@ -79,7 +79,7 @@ func (p *PrometheusHandle) GetNodePowerMeasure(node string) (int64, error) {
 	// Get the power value
 	power := 0.0
 	for _, sample := range nodeMeasure {
-		power = float64(sample.Value)*WATT_TO_MICROWATT
+		power = WATT_TO_MICROWATT*float64(sample.Value)/timeElapsed
 
 	}
 
