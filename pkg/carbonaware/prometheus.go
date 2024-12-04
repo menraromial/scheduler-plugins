@@ -19,9 +19,11 @@ const (
 	nodeDramEnergyQueryTemplate  = "kepler_node_dram_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
 	nodeUnCoreEnergyQueryTemplate = "kepler_node_uncore_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
 	nodeOtherEnergyQueryTemplate  = "kepler_node_other_joules_total{instance=\"%s\",mode=\"dynamic\"}[%s]"
-	hostPowerQuery = "scaph_host_power_microwatts{node=\"%s\"}"
+	hostPowerQuery = "irate(kepler_node_platform_joules_total{instance=\"%s\"}[1m])"
+	containerEnergyQueryTemplate = "irate(kepler_container_joules_total{pod_name=~\".*%s.*\"}[1m])"
 
-	WH_TO_MICROWATT = 1000000
+
+	WATT_TO_MICROWATT = 1e+6
 	timeElapsed = 30.0
 )
 
@@ -49,9 +51,9 @@ func NewPrometheus(address string) *PrometheusHandle {
 }
 
 
-func (p *PrometheusHandle) query(node string) (model.Value, error) {
+func (p *PrometheusHandle) query(query_str,node string) (model.Value, error) {
 
-	queryString := fmt.Sprintf(hostPowerQuery, node)
+	queryString := fmt.Sprintf(query_str, node)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	results, warnings, err := p.api.Query(ctx, queryString, time.Now())
 	cancel()
@@ -65,7 +67,7 @@ func (p *PrometheusHandle) query(node string) (model.Value, error) {
 
 
 func (p *PrometheusHandle) GetNodePowerMeasure(node string) (int64, error) {
-	res, err := p.query(node)
+	res, err := p.query(hostPowerQuery,node)
 	//res, err := p.query(query)
 	if err != nil {
 		return 0, fmt.Errorf("[CarbonAware] Error querying prometheus: %w", err)
@@ -75,9 +77,10 @@ func (p *PrometheusHandle) GetNodePowerMeasure(node string) (int64, error) {
 		return 0, fmt.Errorf("[CarbonAware] Invalid response, expected 2 value, got %d", len(nodeMeasure))
 	}
 	// Get the power value
-	power := 0
+	power := 0.0
 	for _, sample := range nodeMeasure {
-		power = int(sample.Value)
+		power = float64(sample.Value)*WATT_TO_MICROWATT
+
 	}
 
 

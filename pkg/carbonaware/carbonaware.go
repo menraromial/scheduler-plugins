@@ -27,7 +27,8 @@ const (
 	constraints0PowerLimitStr  = "rapl0/constraint-1-power-limit-uw"
 	constraints0PowerLimitCStr = "crapl0/constraint-1-power-limit-uw"
 
-	prometheusURL = "http://prometheus-server.default.svc.cluster.local"
+	//prometheusURL = "http://prometheus-server.default.svc.cluster.local"
+	prometheusURL = "http://prometheus-k8s.monitoring.svc.cluster.local:9090"
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
@@ -240,7 +241,7 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	//nodeRes,err = wantPower.nodeResources[nodeName]
 	prometheus := kcas.prometheus
 	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
-	klog.V(4).Info("FitsPower: ","node name: ",nodeName, " , nodeActualConsumption: ", nodeActualConsumption)
+	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , nodeActualConsumption: ", nodeActualConsumption)
 	if err != nil {
 		klog.Errorf("[CarbonAware] Error getting node power: %v", err)
 		return false
@@ -256,10 +257,10 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 	podMemory := podInfo.Memory
 
 	klog.V(4).Info("FitsPower: ",  "podCPU: ", podCPU, " , podMemory: ", podMemory)
-	klog.V(4).Info("FitsPower: ", "node CPU: ", nodeRes.CPU, " , node Memory: ", nodeRes.Memory)
-	klog.V(4).Info("FitsPower: ", "node APowerLimit: ", nodeRes.APowerLimit, " , node CPowerLimit: ", nodeRes.CPowerLimit)
+	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , node CPU: ", nodeRes.CPU, " , node Memory: ", nodeRes.Memory)
+	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , node APowerLimit: ", nodeRes.APowerLimit, " , node CPowerLimit: ", nodeRes.CPowerLimit)
 	// calculate the power needed by the pod
-	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
 	// check if the node has enough power for the pod
 	prI := nodeRes.APowerLimit - nodeActualConsumption
 
@@ -335,8 +336,10 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 
 	podCPU := preScoreState.podInfo.MilliCPU
 	podMemory := preScoreState.podInfo.Memory
+	
+	
 
-	podPower := nodeRes.CPowerLimit * (podCPU/nodeRes.CPU + podMemory/nodeRes.Memory)
+	podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
 	//podPower = podPower // convert to appropriate unit
 	prI := nodeRes.APowerLimit - nodeActualConsumption
 
