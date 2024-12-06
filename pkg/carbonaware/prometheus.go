@@ -13,14 +13,16 @@ import (
 
 const (
 	// nodeMeasureQueryTemplate is the template string to get the query for the node used bandwidth
-	nodeMeasureQueryTemplate = "sum_over_time(node_network_receive_bytes_total{kubernetes_node=\"%s\",device=\"%s\"}[%s])"
-	nodeTotalConsumptionQuery = "sum_over_time(kepler_container_joules_total{instance=\"%s\"}[%s])"
-    nodeCoreEnergyQueryTemplate  = "kepler_node_core_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
-	nodeDramEnergyQueryTemplate  = "kepler_node_dram_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
-	nodeUnCoreEnergyQueryTemplate = "kepler_node_uncore_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
-	nodeOtherEnergyQueryTemplate  = "kepler_node_other_joules_total{instance=\"%s\",mode=\"dynamic\"}[%s]"
+	// nodeMeasureQueryTemplate = "sum_over_time(node_network_receive_bytes_total{kubernetes_node=\"%s\",device=\"%s\"}[%s])"
+	// nodeTotalConsumptionQuery = "sum_over_time(kepler_container_joules_total{instance=\"%s\"}[%s])"
+    // nodeCoreEnergyQueryTemplate  = "kepler_node_core_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	// nodeDramEnergyQueryTemplate  = "kepler_node_dram_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	// nodeUnCoreEnergyQueryTemplate = "kepler_node_uncore_joules_total{instance=\"%s\",mode=\"dynamic\"}[%sm]"
+	// nodeOtherEnergyQueryTemplate  = "kepler_node_other_joules_total{instance=\"%s\",mode=\"dynamic\"}[%s]"
 	hostPowerQuery = "irate(kepler_node_platform_joules_total{instance=\"%s\"}[1m])"
-	containerEnergyQueryTemplate = "irate(kepler_container_joules_total{pod_name=~\".*%s.*\"}[1m])"
+	//containerEnergyQueryTemplate = "irate(kepler_container_joules_total{pod_name=~\".*%s.*\"}[1m])"
+	containerEnergyQueryTemplate = "max(max_over_time(irate(kepler_container_joules_total{pod_name=~\".*%s.*\"}[1m])[1d:]))"
+ 
 
 
 	WATT_TO_MICROWATT = 1e+6
@@ -65,8 +67,23 @@ func (p *PrometheusHandle) query(query_str,node string) (model.Value, error) {
 	return results, err
 }
 
+func (p *PrometheusHandle) getPodTotalPower(podBaseName string) (int64, error) {
+	res, err := p.query(containerEnergyQueryTemplate, podBaseName)
+	if err != nil {
+		return 0, fmt.Errorf("[CarbonAware] Error querying prometheus: %w", err)
+	}
+	podMeasure := res.(model.Vector)
+	if len(podMeasure) == 0 {
+		return 0, fmt.Errorf("[CarbonAware] Invalid response, expected 2 value, got %d", len(podMeasure))
+	}
+	// Get the power value
+	
+	power := WATT_TO_MICROWATT*float64(podMeasure[0].Value)/timeElapsed
 
-func (p *PrometheusHandle) GetNodePowerMeasure(node string) (int64, error) {
+	return int64(power), nil
+}
+
+func (p *PrometheusHandle) getNodePowerMeasure(node string) (int64, error) {
 	res, err := p.query(hostPowerQuery,node)
 	//res, err := p.query(query)
 	if err != nil {

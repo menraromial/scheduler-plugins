@@ -57,14 +57,14 @@ ${IMAGE_BUILD_CMD} build \
   --build-arg CGO_ENABLED=0 \
   ${EXTRA_ARGS:-}  ${TAG_FLAG:-} ${REGISTRY}/${IMAGE} .
 
-${IMAGE_BUILD_CMD} build \
-  --platform=${PLATFORMS} \
-  -f ${CONTROLLER_DIR}/Dockerfile \
-  --build-arg RELEASE_VERSION=${RELEASE_VERSION} \
-  --build-arg GO_BASE_IMAGE=${GO_BASE_IMAGE} \
-  --build-arg DISTROLESS_BASE_IMAGE=${DISTROLESS_BASE_IMAGE} \
-  --build-arg CGO_ENABLED=0 \
-  ${EXTRA_ARGS:-} ${TAG_FLAG:-} ${REGISTRY}/${CONTROLLER_IMAGE} .
+# ${IMAGE_BUILD_CMD} build \
+#   --platform=${PLATFORMS} \
+#   -f ${CONTROLLER_DIR}/Dockerfile \
+#   --build-arg RELEASE_VERSION=${RELEASE_VERSION} \
+#   --build-arg GO_BASE_IMAGE=${GO_BASE_IMAGE} \
+#   --build-arg DISTROLESS_BASE_IMAGE=${DISTROLESS_BASE_IMAGE} \
+#   --build-arg CGO_ENABLED=0 \
+#   ${EXTRA_ARGS:-} ${TAG_FLAG:-} ${REGISTRY}/${CONTROLLER_IMAGE} .
 
 if [[ ! -z $BLD_INSTANCE ]]; then
   ${DOCKER_BUILDX_CMD:-${BUILDER} buildx} rm $BLD_INSTANCE

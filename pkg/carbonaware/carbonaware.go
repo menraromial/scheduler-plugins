@@ -36,21 +36,7 @@ var _ framework.FilterPlugin = &CarbonAware{}
 var _ framework.PreScorePlugin = &CarbonAware{}
 var _ framework.ScorePlugin = &CarbonAware{}
 
-//var _ framework.NodeScoreExtension = &CarbonAware{}
 
-/* EnergyMetrics holds the energy metrics for nodes
-type EnergyMetrics struct {
-	Status string `json:"status"`
-	Data   struct {
-		Result []struct {
-			Metric struct {
-				Instance string `json:"instance"`
-			} `json:"metric"`
-			Value []interface{} `json:"value"`
-		} `json:"result"`
-	} `json:"data"`
-}
-*/
 
 type CarbonAware struct {
 	handle     framework.Handle
@@ -68,6 +54,7 @@ type NodeResources struct {
 type preFilterState struct {
 	res           framework.Resource
 	nodeResources map[string]NodeResources
+	podBaseName   string //app.kcas/name
 }
 
 // Clone the prefilter state.
@@ -79,6 +66,7 @@ func (s *preFilterState) Clone() framework.StateData {
 type preScoreState struct {
 	podInfo       framework.Resource
 	nodeResources map[string]NodeResources
+	podBaseName   string //app.kcas/name
 }
 
 // Clone implements the mandatory Clone interface. We don't really copy the data since
@@ -91,10 +79,12 @@ func (eas *CarbonAware) Name() string {
 	return Name
 }
 
+// Important to implement this method if you want to use the Score extension point like NormalizeScore.
 func (kcas *CarbonAware) ScoreExtensions() framework.ScoreExtensions {
 	return kcas
 }
 
+// New initializes a new plugin and returns it.
 func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 
 	args, ok := obj.(*config.CarbonAwareArgs)
@@ -111,6 +101,8 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 
 }
 
+
+// This function gets the value of a label from a node
 func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (string, error) {
 	node, err := kcas.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
@@ -122,7 +114,9 @@ func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (st
 func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 	// pod hasn't scheduled yet so we don't need to worry about InPlacePodVerticalScalingEnabled
 	reqs := resource.PodRequests(pod, resource.PodResourcesOptions{})
+	podBasName := pod.GetLabels()["app.kcas/name"]
 	result := &preFilterState{}
+	result.podBaseName = podBasName
 	result.res.SetMaxResource(reqs)
 	return result
 }
@@ -223,7 +217,8 @@ func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error
 // Filter implements framework.FilterPlugin.
 func (kcas *CarbonAware) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	// Get the prefilter state.
-	klog.V(4).Info("Filtering node", "node", nodeInfo.Node().Name, "pod", pod.Name)
+	klog.V(4).Info("Filtering node: ", "node: ", nodeInfo.Node().Name, ", pod: ", pod.Name)
+	
 	wantPower, err := getPreFilterState(state)
 	if err != nil {
 		return framework.AsStatus(err)
@@ -240,27 +235,34 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 
 	//nodeRes,err = wantPower.nodeResources[nodeName]
 	prometheus := kcas.prometheus
-	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
+	nodeActualConsumption, err := prometheus.getNodePowerMeasure(nodeName)
 	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , nodeActualConsumption: ", nodeActualConsumption)
 	if err != nil {
 		klog.Errorf("[CarbonAware] Error getting node power: %v", err)
 		return false
 	}
 
+	podPower, err := prometheus.getPodTotalPower(wantPower.podBaseName)
+	if err != nil {
+		klog.Errorf("[CarbonAware] Error getting pod power: %v", err)
+			
+	}
+
+
 	nodeRes, ok := wantPower.nodeResources[nodeName]
 	if !ok {
 		return false
 	}
-	podInfo := wantPower.res
+	//podInfo := wantPower.res
 	// Get the CPU and Memory information requested by the pod
-	podCPU := podInfo.MilliCPU
-	podMemory := podInfo.Memory
+	//podCPU := podInfo.MilliCPU
+	//podMemory := podInfo.Memory
 
-	klog.V(4).Info("FitsPower: ",  "podCPU: ", podCPU, " , podMemory: ", podMemory)
-	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , node CPU: ", nodeRes.CPU, " , node Memory: ", nodeRes.Memory)
+	//klog.V(4).Info("FitsPower: ",  "podCPU: ", podCPU, " , podMemory: ", podMemory)
+	//klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , node CPU: ", nodeRes.CPU, " , node Memory: ", nodeRes.Memory)
 	klog.V(4).Info("FitsPower: ","node Name: ",nodeName, " , node APowerLimit: ", nodeRes.APowerLimit, " , node CPowerLimit: ", nodeRes.CPowerLimit)
 	// calculate the power needed by the pod
-	podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
+	//podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
 	// check if the node has enough power for the pod
 	prI := nodeRes.APowerLimit - nodeActualConsumption
 
@@ -292,6 +294,7 @@ func (kcas *CarbonAware) PreScore(ctx context.Context, state *framework.CycleSta
 	preScoreState := &preScoreState{
 		podInfo:       podInfo,
 		nodeResources: filteredNodeResources,
+		podBaseName:   preFilterState.podBaseName,
 	}
 
 	state.Write(preScoreStateKey, preScoreState)
@@ -316,8 +319,9 @@ func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) 
 func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
 	// Implement the scoring logic based on power consumption.
 	//klog.V(4).Info("Scoring phase")
+
 	prometheus := kcas.prometheus
-	nodeActualConsumption, err := prometheus.GetNodePowerMeasure(nodeName)
+	nodeActualConsumption, err := prometheus.getNodePowerMeasure(nodeName)
 	if err != nil {
 		klog.Errorf("[CarbonAware] Error getting node energy: %v", err)
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("Error getting node power: %v", err))
@@ -334,13 +338,18 @@ func (kcas *CarbonAware) Score(ctx context.Context, state *framework.CycleState,
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %s not found in preScoreState", nodeName))
 	}
 
-	podCPU := preScoreState.podInfo.MilliCPU
-	podMemory := preScoreState.podInfo.Memory
+	// podCPU := preScoreState.podInfo.MilliCPU
+	// podMemory := preScoreState.podInfo.Memory
 	
 	
 
-	podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
+	// podPower := int64(float64(nodeRes.CPowerLimit) * (float64(podCPU)/float64(nodeRes.CPU) + float64(podMemory)/float64(nodeRes.Memory)))
 	//podPower = podPower // convert to appropriate unit
+	podPower, err := prometheus.getPodTotalPower(preScoreState.podBaseName)
+	if err != nil {
+		klog.Errorf("[CarbonAware] Error getting pod power: %v", err)
+	}
+	
 	prI := nodeRes.APowerLimit - nodeActualConsumption
 
 	score := prI - podPower
