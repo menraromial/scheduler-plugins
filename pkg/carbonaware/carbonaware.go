@@ -422,8 +422,8 @@ func (kcas *CarbonAware) NormalizeScore(ctx context.Context,
 	var normCost float64
 	for i := range scores {
 		if maxCost != minCost { // If max != min
-			// node_normalized_cost = MAX_SCORE * ( ( nodeScore - minCost) / (maxCost - minCost)
-			normCost = float64(framework.MaxNodeScore) * float64(scores[i].Score-minCost) / float64(maxCost-minCost)
+			// node_normalized_cost = MAX_SCORE * ( ( nodeScore ) / (maxCost)
+			normCost = float64(framework.MaxNodeScore) * float64(scores[i].Score) / float64(maxCost)
 			scores[i].Score = int64(normCost)
 		} else { // If maxCost = minCost, avoid division by 0
 			
