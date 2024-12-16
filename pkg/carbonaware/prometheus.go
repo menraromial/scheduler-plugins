@@ -25,7 +25,7 @@ const (
  
 
 
-	WATT_TO_MICROWATT = 1e+6
+	WATT_TO_MICROWATT = 1000000.0
 	timeElapsed = 60.0
 )
 
@@ -53,9 +53,9 @@ func NewPrometheus(address string) *PrometheusHandle {
 }
 
 
-func (p *PrometheusHandle) query(query_str,node string) (model.Value, error) {
+func (p *PrometheusHandle) query(query_str,obj_name string) (model.Value, error) {
 
-	queryString := fmt.Sprintf(query_str, node)
+	queryString := fmt.Sprintf(query_str, obj_name)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	results, warnings, err := p.api.Query(ctx, queryString, time.Now())
 	cancel()
@@ -74,7 +74,7 @@ func (p *PrometheusHandle) getPodTotalPower(podBaseName string) (int64, error) {
 	}
 	podMeasure := res.(model.Vector)
 	if len(podMeasure) == 0 {
-		return 0, fmt.Errorf("[CarbonAware] Invalid response, expected 2 value, got %d", len(podMeasure))
+		return 0, fmt.Errorf("[CarbonAware] Invalid response, got %d", len(podMeasure))
 	}
 	// Get the power value
 	

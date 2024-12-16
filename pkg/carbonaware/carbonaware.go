@@ -92,6 +92,7 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 		return nil, fmt.Errorf("[CarbonAware] want args to be of type CarbonAwareArgs, got %T", obj)
 	}
 
+
 	klog.Infof("[CarbonAware] args received.TimeRangeInMinutes: %d, Address: %s", args.TimeRangeInMinutes, args.Address)
 
 	return &CarbonAware{
@@ -247,6 +248,8 @@ func (kcas *CarbonAware) fitsPower(wantPower *preFilterState, nodeInfo *framewor
 		klog.Errorf("[CarbonAware] Error getting pod power: %v", err)
 			
 	}
+
+	klog.Info("podName: ", wantPower.podBaseName)
 
 
 	nodeRes, ok := wantPower.nodeResources[nodeName]
