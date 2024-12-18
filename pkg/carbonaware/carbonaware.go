@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 
 	//"time"
 
+	//corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
@@ -22,13 +23,26 @@ const (
 	//prometheusURL = "http://10.128.0.3:9090/api/v1/query?query=kepler_node_package_joules_total"
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
-
 	ErrReason                  = "node(s) didn't have power for the requested pod"
 	constraints0PowerLimitStr  = "rapl0/constraint-1-power-limit-uw"
 	constraints0PowerLimitCStr = "crapl0/constraint-1-power-limit-uw"
 
 	//prometheusURL = "http://prometheus-server.default.svc.cluster.local"
-	prometheusURL = "http://prometheus-k8s.monitoring.svc.cluster.local:9090"
+	prometheusUrlDefault = "http://prometheus-k8s.monitoring.svc.cluster.local:9090"
+
+	prometheusUrlEnv = "PROMETHEUS_URL"
+
+	aggregationFunctionEnv = "AGGREGATION_FUNCTION"    
+	rangeFunctionEnv = "RANGE_FUNCTION" 
+	rateFunctionEnv = "RATE_FUNCTION"          
+	rateDurationEnv = "RATE_DURATION"             
+	queryRangeEnv = "QUERY_RANGE"    
+
+	aggregationFunctionDefault = "max"    
+	rangeFunctionDefault = "max_over_time" 
+	rateFunctionDefault = "irate"          
+	rateDurationDefault = "1m"             
+	queryRangeDefault = "1d"    
 )
 
 var _ framework.PreFilterPlugin = &CarbonAware{}
@@ -69,6 +83,14 @@ type preScoreState struct {
 	podBaseName   string //app.kcas/name
 }
 
+// Utility functions
+func getEnvOrDefault(envKey, defaultValue string) string {
+	if value := os.Getenv(envKey); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
 // Clone implements the mandatory Clone interface. We don't really copy the data since
 // there is no need for that.
 func (s *preScoreState) Clone() framework.StateData {
@@ -92,12 +114,24 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 		return nil, fmt.Errorf("[CarbonAware] want args to be of type CarbonAwareArgs, got %T", obj)
 	}
 
+	prometheusURL := getEnvOrDefault(prometheusUrlEnv, prometheusUrlDefault)
+
+	prometheusConfig := PrometheusConfig{
+		AggregationFunction: getEnvOrDefault(aggregationFunctionEnv, aggregationFunctionDefault),
+		RangeFunction: getEnvOrDefault(rangeFunctionEnv, rangeFunctionDefault),
+		RateFunction: getEnvOrDefault(rateFunctionEnv, rateFunctionDefault),
+		RateDuration: getEnvOrDefault(rateDurationEnv, rateDurationDefault),
+		QueryRange: getEnvOrDefault(queryRangeEnv, queryRangeDefault),
+	}
+
+	klog.Info("[CarbonAware] Prometheus Config: ", prometheusConfig)
+
 
 	klog.Infof("[CarbonAware] args received.TimeRangeInMinutes: %d, Address: %s", args.TimeRangeInMinutes, args.Address)
 
 	return &CarbonAware{
 		handle:     handle,
-		prometheus: NewPrometheus(prometheusURL),
+		prometheus: NewPrometheus(prometheusURL, prometheusConfig),
 	}, nil
 
 }
@@ -418,7 +452,7 @@ func getMinMaxScores(scores framework.NodeScoreList) (int64, int64) {
 // NormalizeScore : normalize scores since lower scores correspond to lower latency
 func (kcas *CarbonAware) NormalizeScore(ctx context.Context,
 	state *framework.CycleState,
-	pod *corev1.Pod,
+	pod *v1.Pod,
 	scores framework.NodeScoreList) *framework.Status {
 	logger := klog.FromContext(ctx)
 	logger.V(4).Info("before normalization: ", "scores ", scores)
