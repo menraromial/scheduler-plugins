@@ -6,7 +6,7 @@
 bin
 testbin/*
 hack/tools/bin/*
-/vendor/
+#/vendor/
 # macOS
 .DS_Store
 
