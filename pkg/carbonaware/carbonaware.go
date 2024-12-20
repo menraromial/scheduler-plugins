@@ -149,6 +149,7 @@ func (kcas *CarbonAware) getNodeLabelValue(nodeName string, labelKey string) (st
 func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 	// pod hasn't scheduled yet so we don't need to worry about InPlacePodVerticalScalingEnabled
 	reqs := resource.PodRequests(pod, resource.PodResourcesOptions{})
+	
 	podBasName := pod.GetLabels()["app.kcas/name"]
 	result := &preFilterState{}
 	result.podBaseName = podBasName
@@ -197,14 +198,14 @@ func (kcas *CarbonAware) computeResources() (map[string]NodeResources, *framewor
 			continue
 		}
 		// Get CPU and Memory information from the node
-		capacity := node.Node().Status.Capacity
-		cpu := capacity.Cpu().MilliValue()
-		memory := capacity.Memory().Value() // Convert memory from
+		// capacity := node.Node().Status.Capacity
+		// cpu := capacity.Cpu().MilliValue()
+		// memory := capacity.Memory().Value() // Convert memory from
 
 		//nodeLimits[nodeName] = powerLimit
 		nodeRes[nodeName] = NodeResources{
-			CPU:         cpu,
-			Memory:      memory,
+			//CPU:         cpu,
+			//Memory:      memory,
 			APowerLimit: powerLimit,
 			CPowerLimit: powerLimitC,
 		}
