@@ -17,7 +17,8 @@ GO_VERSION := $(shell awk '/^go /{print $$2}' go.mod|head -n1)
 INTEGTESTENVVAR=SCHED_PLUGINS_TEST_VERBOSE=1
 
 # Manage platform and builders
-PLATFORMS ?= linux/amd64,linux/arm64,linux/s390x,linux/ppc64le
+#PLATFORMS ?= linux/amd64,linux/arm64,linux/ppc64le,linux/s390x
+PLATFORMS ?= linux/amd64,linux/arm64
 BUILDER ?= docker
 ifeq ($(BUILDER),podman)
 	ALL_FLAG=--all
@@ -28,8 +29,10 @@ endif
 # REGISTRY is the container registry to push
 # into. The default is to push to the staging
 # registry, not production(registry.k8s.io).
-REGISTRY?=gcr.io/k8s-staging-scheduler-plugins
-RELEASE_VERSION?=v$(shell date +%Y%m%d)-$(shell git describe --tags --match "v*")
+#REGISTRY?=gcr.io/k8s-staging-scheduler-plugins
+REGISTRY?=menraromial
+#RELEASE_VERSION?=v$(shell date +%Y%m%d)-$(shell git describe --tags --match "v*")
+RELEASE_VERSION?=v0.0.0
 RELEASE_IMAGE:=kube-scheduler:$(RELEASE_VERSION)
 RELEASE_CONTROLLER_IMAGE:=controller:$(RELEASE_VERSION)
 GO_BASE_IMAGE?=golang:$(GO_VERSION)
