@@ -251,6 +251,10 @@ type Logger struct {
 	level int
 }
 
+func (l Logger) InfoS(s string, param2 string, name string, param4 string, param5 string) {
+	panic("unimplemented")
+}
+
 // Enabled tests whether this Logger is enabled.  For example, commandline
 // flags might be used to set the logging verbosity and disable some info logs.
 func (l Logger) Enabled() bool {
