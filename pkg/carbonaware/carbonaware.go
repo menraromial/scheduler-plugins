@@ -290,7 +290,7 @@ func (ca *CarbonAware) fitsPower(state *preFilterState, nodeInfo *framework.Node
 	podPower, err := ca.prometheus.getPodTotalPower(state.podBaseName)
 	if err != nil {
 		klog.ErrorS(err, " Failed to get pod power consumption ", "pod ", state.podBaseName)
-		return false
+		//return false
 	}
 
 	nodeRes, ok := state.nodeResources[nodeName]
