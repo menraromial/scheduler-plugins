@@ -33,7 +33,7 @@ endif
 REGISTRY?=menraromial
 #RELEASE_VERSION?=v$(shell date +%Y%m%d)-$(shell git describe --tags --match "v*")
 RELEASE_VERSION?=v0.0.1
-RELEASE_IMAGE:=kube-scheduler:$(RELEASE_VERSION)
+RELEASE_IMAGE:=kcas-scheduler:$(RELEASE_VERSION)
 RELEASE_CONTROLLER_IMAGE:=controller:$(RELEASE_VERSION)
 GO_BASE_IMAGE?=golang:$(GO_VERSION)
 DISTROLESS_BASE_IMAGE?=gcr.io/distroless/static:nonroot
