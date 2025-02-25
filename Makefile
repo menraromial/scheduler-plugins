@@ -32,7 +32,7 @@ endif
 #REGISTRY?=gcr.io/k8s-staging-scheduler-plugins
 REGISTRY?=menraromial
 #RELEASE_VERSION?=v$(shell date +%Y%m%d)-$(shell git describe --tags --match "v*")
-RELEASE_VERSION?=v0.0.0
+RELEASE_VERSION?=v0.0.1
 RELEASE_IMAGE:=kube-scheduler:$(RELEASE_VERSION)
 RELEASE_CONTROLLER_IMAGE:=controller:$(RELEASE_VERSION)
 GO_BASE_IMAGE?=golang:$(GO_VERSION)

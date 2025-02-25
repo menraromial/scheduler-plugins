@@ -5,10 +5,8 @@ package carbonaware
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
-	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +28,8 @@ const (
 	// Label constants
 	labelPrefix = "rapl"
 	labelSuffix = "power_limit_uw"
+	nodePowerLimitLabelKey = "rapl/pmax"
+	podPowerLabelKey = "app.kcas/name"
 	
 )
 
@@ -69,6 +69,7 @@ type CarbonAware struct {
 type NodeResources struct {
 	MinPowerLimit int64 // Minimum power limit > 0 across all RAPL domains
     MaxPowerLimit int64 // Maximum power limit across all RAPL domains
+
 }
 
 // preFilterState represents the state computed during PreFilter
@@ -138,7 +139,7 @@ func (ca *CarbonAware) PreFilter(ctx context.Context, state *framework.CycleStat
 	preFilterState := &preFilterState{
 		//res:           resource.PodRequests(pod, resource.PodResourcesOptions{}),
 		nodeResources: nodeRes,
-		podBaseName:   pod.GetLabels()["app.kcas/name"],
+		podBaseName:   pod.GetLabels()[podPowerLabelKey],
 	}
 
 	preFilterState.res.SetMaxResource(reqs)
@@ -261,15 +262,15 @@ func (ca *CarbonAware) computeNodeResources() (map[string]NodeResources, *framew
 		nodeName := node.Node().Name
 		
        // Récupérer min et max des power limits
-	   minPower, maxPower, err := ca.getPowerLimitsFromLabels(nodeName)
+	   nodePowerLimit, err := ca.getNodePowerLimit(nodeName)
 	   if err != nil {
 		   klog.ErrorS(err, " Failed to get power limits ", "node ", nodeName)
 		   continue
 	   }
 
 		nodeRes[nodeName] = NodeResources{
-			MinPowerLimit: minPower,
-			MaxPowerLimit: maxPower,
+			//MinPowerLimit: minPower,
+			MaxPowerLimit: nodePowerLimit,
 		}
 	}
 
@@ -359,53 +360,71 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 
+func (ca *CarbonAware) getNodePowerLimit(nodeName string) (int64, error) {
+	node, err := ca.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get node %s: %v", nodeName, err)
+	}
+	
+	valueStr := node.Node().Labels[nodePowerLimitLabelKey]
+	if valueStr == "" {
+		return 0, fmt.Errorf("no power limit value found for node %s", nodeName)
+	}
+	 
+	value, err := strconv.ParseInt(valueStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse power limit %s: %v", valueStr, err)
+	}
+	
+	return value, nil
+}
 
 // getPowerLimitsFromLabels returns the min (>0) and max power limits from all matching labels
-func (ca *CarbonAware) getPowerLimitsFromLabels(nodeName string) (min int64, max int64, err error) {
-    node, err := ca.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
-    if err != nil {
-        return 0, 0, fmt.Errorf("failed to get node %s: %v", nodeName, err)
-    }
+// func (ca *CarbonAware) getPowerLimitsFromLabels(nodeName string) (min int64, max int64, err error) {
+//     node, err := ca.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+//     if err != nil {
+//         return 0, 0, fmt.Errorf("failed to get node %s: %v", nodeName, err)
+//     }
 
-    min = math.MaxInt64
-    max = 0
-    foundValidValue := false
+//     min = math.MaxInt64
+//     max = 0
+//     foundValidValue := false
 
-    // Parcourir tous les labels du node
-    for label, valueStr := range node.Node().Labels {
-        // Vérifier si le label correspond au pattern
-        if strings.HasPrefix(label, labelPrefix) && strings.HasSuffix(label, labelSuffix) {
-            value, err := strconv.ParseInt(valueStr, 10, 64)
-            if err != nil {
-                klog.V(4).Info("Failed to parse power limit ", 
-                    " node ", nodeName,
-                    " label ", label,
-                    " value ", valueStr,
-                    " error ", err)
-                continue
-            }
+//     // Parcourir tous les labels du node
+//     for label, valueStr := range node.Node().Labels {
+//         // Vérifier si le label correspond au pattern
+//         if strings.HasPrefix(label, labelPrefix) && strings.HasSuffix(label, labelSuffix) {
+//             value, err := strconv.ParseInt(valueStr, 10, 64)
+//             if err != nil {
+//                 klog.V(4).Info("Failed to parse power limit ", 
+//                     " node ", nodeName,
+//                     " label ", label,
+//                     " value ", valueStr,
+//                     " error ", err)
+//                 continue
+//             }
 
-            // Ne considérer que les valeurs strictement positives
-            if value > 0 {
-                foundValidValue = true
-                if value < min {
-                    min = value
-                }
-                if value > max {
-                    max = value
-                }
-            }
-        }
-    }
+//             // Ne considérer que les valeurs strictement positives
+//             if value > 0 {
+//                 foundValidValue = true
+//                 if value < min {
+//                     min = value
+//                 }
+//                 if value > max {
+//                     max = value
+//                 }
+//             }
+//         }
+//     }
 
-    if !foundValidValue {
-        return 0, 0, fmt.Errorf("no valid power limit values found for node %s", nodeName)
-    }
+//     if !foundValidValue {
+//         return 0, 0, fmt.Errorf("no valid power limit values found for node %s", nodeName)
+//     }
 
-    klog.V(4).Info("Found power limits ",
-        " node ", nodeName,
-        " min ", min,
-        " max ", max)
+//     klog.V(4).Info("Found power limits ",
+//         " node ", nodeName,
+//         " min ", min,
+//         " max ", max)
 
-    return min, max, nil
-}
+//     return min, max, nil
+// }
