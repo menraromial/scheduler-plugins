@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,19 +19,19 @@ import (
 
 // Configuration constants
 const (
-	Name = "CarbonAware"
+	Name      = "CarbonAware"
 	ErrReason = "node(s) didn't meet power requirements for the requested pod"
-	
+
 	// State keys
 	preFilterStateKey = "PreFilter" + Name
 	preScoreStateKey  = "PreScore" + Name
 
 	// Label constants
-	labelPrefix = "rapl"
-	labelSuffix = "power_limit_uw"
+	labelPrefix            = "rapl"
+	labelSuffix            = "power_limit_uw"
 	nodePowerLimitLabelKey = "rapl/pmax"
-	podPowerLabelKey = "app.kcas/name"
-	
+	podNameLabelKey        = "app.kcas/name"
+	podPowerLabelKey       = "app.kcas/power"
 )
 
 // Prometheus configuration defaults and environment keys
@@ -39,16 +40,16 @@ const (
 	prometheusURLEnv     = "PROMETHEUS_URL"
 
 	aggregationFuncDefault = "max"
-	rangeFuncDefault      = "max_over_time"
-	rateFuncDefault       = "irate"
-	rateDurationDefault   = "1m"
-	queryRangeDefault     = "1d"
+	rangeFuncDefault       = "max_over_time"
+	rateFuncDefault        = "irate"
+	rateDurationDefault    = "1m"
+	queryRangeDefault      = "1d"
 
 	aggregationFuncEnv = "AGGREGATION_FUNCTION"
-	rangeFuncEnv      = "RANGE_FUNCTION"
-	rateFuncEnv       = "RATE_FUNCTION"
-	rateDurationEnv   = "RATE_DURATION"
-	queryRangeEnv     = "QUERY_RANGE"
+	rangeFuncEnv       = "RANGE_FUNCTION"
+	rateFuncEnv        = "RATE_FUNCTION"
+	rateDurationEnv    = "RATE_DURATION"
+	queryRangeEnv      = "QUERY_RANGE"
 )
 
 // Verify interface implementations
@@ -57,18 +58,21 @@ var (
 	_ framework.FilterPlugin    = &CarbonAware{}
 	_ framework.PreScorePlugin  = &CarbonAware{}
 	_ framework.ScorePlugin     = &CarbonAware{}
+	_ framework.ReservePlugin   = &CarbonAware{}
 )
 
 // CarbonAware implements the scheduler plugin interface
 type CarbonAware struct {
-	handle     framework.Handle
-	prometheus *PrometheusHandle
+	handle               framework.Handle
+	prometheus           *PrometheusHandle
+	nodePowerAllocations map[string]int64 // Power allocations for each node
+	mu                   sync.Mutex
 }
 
 // NodeResources holds resource information for a node
 type NodeResources struct {
 	MinPowerLimit int64 // Minimum power limit > 0 across all RAPL domains
-    MaxPowerLimit int64 // Maximum power limit across all RAPL domains
+	MaxPowerLimit int64 // Maximum power limit across all RAPL domains
 
 }
 
@@ -77,6 +81,7 @@ type preFilterState struct {
 	res           framework.Resource
 	nodeResources map[string]NodeResources
 	podBaseName   string // app.kcas/name
+	podPower      int64  // Power consumption of the pod
 }
 
 // Clone implements the StateData interface
@@ -89,6 +94,7 @@ type preScoreState struct {
 	podInfo       framework.Resource
 	nodeResources map[string]NodeResources
 	podBaseName   string // app.kcas/name
+	podPower      int64
 }
 
 // Clone implements the StateData interface
@@ -105,26 +111,27 @@ func New(_ context.Context, obj runtime.Object, handle framework.Handle) (framew
 
 	prometheusConfig := PrometheusConfig{
 		AggregationFunction: getEnvOrDefault(aggregationFuncEnv, aggregationFuncDefault),
-		RangeFunction:      getEnvOrDefault(rangeFuncEnv, rangeFuncDefault),
-		RateFunction:       getEnvOrDefault(rateFuncEnv, rateFuncDefault),
-		RateDuration:       getEnvOrDefault(rateDurationEnv, rateDurationDefault),
-		QueryRange:         getEnvOrDefault(queryRangeEnv, queryRangeDefault),
+		RangeFunction:       getEnvOrDefault(rangeFuncEnv, rangeFuncDefault),
+		RateFunction:        getEnvOrDefault(rateFuncEnv, rateFuncDefault),
+		RateDuration:        getEnvOrDefault(rateDurationEnv, rateDurationDefault),
+		QueryRange:          getEnvOrDefault(queryRangeEnv, queryRangeDefault),
 	}
 
 	prometheusURL := getEnvOrDefault(prometheusURLEnv, prometheusURLDefault)
-	klog.Info("Initializing CarbonAware plugin ", 
+	klog.Info("Initializing CarbonAware plugin ",
 		" timeRange ", args.TimeRangeInMinutes,
 		" address ", args.Address,
 		" prometheusConfig ", prometheusConfig)
 
 	return &CarbonAware{
-		handle:     handle,
-		prometheus: NewPrometheus(prometheusURL, prometheusConfig),
+		handle:               handle,
+		prometheus:           NewPrometheus(prometheusURL, prometheusConfig),
+		nodePowerAllocations: make(map[string]int64),
 	}, nil
 }
 
 // Plugin interface methods
-func (ca *CarbonAware) Name() string { return Name }
+func (ca *CarbonAware) Name() string                               { return Name }
 func (ca *CarbonAware) ScoreExtensions() framework.ScoreExtensions { return ca }
 
 // PreFilter computes the initial state used by Filter and Score
@@ -135,11 +142,17 @@ func (ca *CarbonAware) PreFilter(ctx context.Context, state *framework.CycleStat
 	}
 
 	reqs := resource.PodRequests(pod, resource.PodResourcesOptions{})
+	pdPowerStr := pod.GetLabels()[podPowerLabelKey]
+	pdPower, pdError := strconv.ParseInt(pdPowerStr, 10, 64)
+	if pdError != nil {
+		pdPower = 0
+	}
 
 	preFilterState := &preFilterState{
 		//res:           resource.PodRequests(pod, resource.PodResourcesOptions{}),
 		nodeResources: nodeRes,
-		podBaseName:   pod.GetLabels()[podPowerLabelKey],
+		podBaseName:   pod.GetLabels()[podNameLabelKey],
+		podPower:      pdPower,
 	}
 
 	preFilterState.res.SetMaxResource(reqs)
@@ -180,10 +193,17 @@ func (ca *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState
 		}
 	}
 
+	pdPowerStr := pod.GetLabels()[podPowerLabelKey]
+	pdPower, pdError := strconv.ParseInt(pdPowerStr, 10, 64)
+	if pdError != nil {
+		pdPower = 0
+	}
+
 	preScoreState := &preScoreState{
 		podInfo:       preFilterState.res,
 		nodeResources: filteredNodeResources,
 		podBaseName:   preFilterState.podBaseName,
+		podPower:      pdPower,
 	}
 
 	state.Write(preScoreStateKey, preScoreState)
@@ -193,7 +213,7 @@ func (ca *CarbonAware) PreScore(ctx context.Context, state *framework.CycleState
 // Score assigns scores to nodes based on power availability
 func (ca *CarbonAware) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
 	logger := klog.FromContext(ctx)
-	
+
 	nodeConsumption, err := ca.prometheus.getNodePowerMeasure(nodeName)
 	if err != nil {
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("error getting node power: %v", err))
@@ -209,15 +229,21 @@ func (ca *CarbonAware) Score(ctx context.Context, state *framework.CycleState, p
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %s not found in preScoreState", nodeName))
 	}
 
+	// Get allocated power for the node
+	ca.mu.Lock()
+	allocatedPower := ca.nodePowerAllocations[nodeName]
+	ca.mu.Unlock()
+
 	podPower, err := ca.prometheus.getPodTotalPower(preScoreState.podBaseName)
-	if err != nil {
-		logger.Error(err, " Error getting pod power")
+	if err != nil || podPower == 0 {
+		logger.Error(err, " Error getting pod power from historical data")
+		podPower = preScoreState.podPower
 	}
 
-	availablePower := nodeRes.MaxPowerLimit - nodeConsumption
+	availablePower := nodeRes.MaxPowerLimit - nodeConsumption - allocatedPower
 	score := availablePower - podPower
 
-	logger.V(4).Info("Computed node score ", 
+	logger.V(4).Info("Computed node score ",
 		" pod ", pod.Name,
 		" node ", nodeName,
 		" score ", score)
@@ -252,7 +278,7 @@ func (ca *CarbonAware) NormalizeScore(ctx context.Context, state *framework.Cycl
 
 func (ca *CarbonAware) computeNodeResources() (map[string]NodeResources, *framework.Status) {
 	nodeRes := make(map[string]NodeResources)
-	
+
 	nodeInfo, err := ca.handle.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("error listing nodes: %v", err))
@@ -260,13 +286,13 @@ func (ca *CarbonAware) computeNodeResources() (map[string]NodeResources, *framew
 
 	for _, node := range nodeInfo {
 		nodeName := node.Node().Name
-		
-       // Récupérer min et max des power limits
-	   nodePowerLimit, err := ca.getNodePowerLimit(nodeName)
-	   if err != nil {
-		   klog.ErrorS(err, " Failed to get power limits ", "node ", nodeName)
-		   continue
-	   }
+
+		// Récupérer min et max des power limits
+		nodePowerLimit, err := ca.getNodePowerLimit(nodeName)
+		if err != nil {
+			klog.ErrorS(err, " Failed to get power limits ", "node ", nodeName)
+			continue
+		}
 
 		nodeRes[nodeName] = NodeResources{
 			//MinPowerLimit: minPower,
@@ -277,20 +303,24 @@ func (ca *CarbonAware) computeNodeResources() (map[string]NodeResources, *framew
 	return nodeRes, nil
 }
 
-
-
 func (ca *CarbonAware) fitsPower(state *preFilterState, nodeInfo *framework.NodeInfo) bool {
 	nodeName := nodeInfo.Node().Name
-	
+
 	nodeConsumption, err := ca.prometheus.getNodePowerMeasure(nodeName)
 	if err != nil {
 		klog.ErrorS(err, " Failed to get node power consumption ", "node ", nodeName)
 		return false
 	}
 
+	// Get allocated power for the node
+	ca.mu.Lock()
+	allocatedPower := ca.nodePowerAllocations[nodeName]
+	ca.mu.Unlock()
+
 	podPower, err := ca.prometheus.getPodTotalPower(state.podBaseName)
-	if err != nil {
-		klog.ErrorS(err, " Failed to get pod power consumption ", "pod ", state.podBaseName)
+	if err != nil || podPower == 0 {
+		podPower = state.podPower
+		klog.ErrorS(err, " Failed to get pod power consumption historical data ", "pod ", state.podBaseName)
 		//return false
 	}
 
@@ -299,7 +329,7 @@ func (ca *CarbonAware) fitsPower(state *preFilterState, nodeInfo *framework.Node
 		return false
 	}
 
-	availablePower := nodeRes.MaxPowerLimit - nodeConsumption
+	availablePower := nodeRes.MaxPowerLimit - nodeConsumption - allocatedPower
 
 	klog.V(4).Info("Power fit check ",
 		" node ", nodeName,
@@ -359,72 +389,89 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-
 func (ca *CarbonAware) getNodePowerLimit(nodeName string) (int64, error) {
 	node, err := ca.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get node %s: %v", nodeName, err)
 	}
-	
+
 	valueStr := node.Node().Labels[nodePowerLimitLabelKey]
 	if valueStr == "" {
 		return 0, fmt.Errorf("no power limit value found for node %s", nodeName)
 	}
-	 
+
 	value, err := strconv.ParseInt(valueStr, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse power limit %s: %v", valueStr, err)
 	}
-	
+
 	return value, nil
 }
 
-// getPowerLimitsFromLabels returns the min (>0) and max power limits from all matching labels
-// func (ca *CarbonAware) getPowerLimitsFromLabels(nodeName string) (min int64, max int64, err error) {
-//     node, err := ca.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
-//     if err != nil {
-//         return 0, 0, fmt.Errorf("failed to get node %s: %v", nodeName, err)
-//     }
+// Reserve marks power resources as reserved
+func (ca *CarbonAware) Reserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
+	logger := klog.FromContext(ctx)
+	logger.V(4).Info("Reserving power resources", "pod", pod.Name, "node", nodeName)
 
-//     min = math.MaxInt64
-//     max = 0
-//     foundValidValue := false
+	preScoreState, err := getPreScoreState(state)
+	if err != nil {
+		return framework.AsStatus(err)
+	}
 
-//     // Parcourir tous les labels du node
-//     for label, valueStr := range node.Node().Labels {
-//         // Vérifier si le label correspond au pattern
-//         if strings.HasPrefix(label, labelPrefix) && strings.HasSuffix(label, labelSuffix) {
-//             value, err := strconv.ParseInt(valueStr, 10, 64)
-//             if err != nil {
-//                 klog.V(4).Info("Failed to parse power limit ", 
-//                     " node ", nodeName,
-//                     " label ", label,
-//                     " value ", valueStr,
-//                     " error ", err)
-//                 continue
-//             }
+	powerRequest := preScoreState.podPower
 
-//             // Ne considérer que les valeurs strictement positives
-//             if value > 0 {
-//                 foundValidValue = true
-//                 if value < min {
-//                     min = value
-//                 }
-//                 if value > max {
-//                     max = value
-//                 }
-//             }
-//         }
-//     }
+	if podPower, err := ca.prometheus.getPodTotalPower(preScoreState.podBaseName); err == nil && podPower != 0 {
+		powerRequest = podPower
+	}
 
-//     if !foundValidValue {
-//         return 0, 0, fmt.Errorf("no valid power limit values found for node %s", nodeName)
-//     }
+	if powerRequest > 0 {
+		ca.mu.Lock()
+		ca.nodePowerAllocations[nodeName] += powerRequest
+		currentAllocation := ca.nodePowerAllocations[nodeName]
+		ca.mu.Unlock()
 
-//     klog.V(4).Info("Found power limits ",
-//         " node ", nodeName,
-//         " min ", min,
-//         " max ", max)
+		logger.V(4).Info("Reserved power for pod ",
+			" pod: ", pod.Name,
+			" node: ", nodeName,
+			" powerRequest: ", powerRequest,
+			" totalNodeAllocation: ", currentAllocation)
+	}
 
-//     return min, max, nil
-// }
+	return nil
+}
+
+// Unreserve implements framework.ReservePlugin.
+func (ca *CarbonAware) Unreserve(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) {
+	logger := klog.FromContext(ctx)
+	logger.V(4).Info("Unreserving power resources", "pod", p.Name, "node", nodeName)
+
+	preScoreState, err := getPreScoreState(state)
+	if err != nil {
+		logger.Error(err, "Failed to get prefilter state during unreserve")
+		return
+	}
+
+	powerRequest := preScoreState.podPower
+
+	if podPower, err := ca.prometheus.getPodTotalPower(preScoreState.podBaseName); err == nil && podPower != 0 {
+		powerRequest = podPower
+	}
+
+	if powerRequest > 0 {
+		ca.mu.Lock()
+		if ca.nodePowerAllocations[nodeName] >= powerRequest {
+			ca.nodePowerAllocations[nodeName] -= powerRequest
+		} else {
+			// This should not happen, but ensure we don't go negative
+			ca.nodePowerAllocations[nodeName] = 0
+		}
+		currentAllocation := ca.nodePowerAllocations[nodeName]
+		ca.mu.Unlock()
+
+		logger.V(4).Info("Released power reservation ",
+			" pod: ", p.Name,
+			" node: ", nodeName,
+			" powerRequest: ", powerRequest,
+			" totalNodeAllocation: ", currentAllocation)
+	}
+}
